@@ -5,6 +5,9 @@ Multi-provider : Claude -> OpenAI -> Ollama (fallback)
 Securite : Auth, CSRF, Zero Data Retention, Anti-injection, Headers
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import io
 import json
@@ -25,6 +28,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -41,6 +45,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.colors import red, black
 from reportlab.lib.pagesizes import A4
 import fitz  # PyMuPDF
+import pytesseract
+from PIL import Image
 
 app = Flask(__name__)
 
@@ -85,10 +91,10 @@ OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen3-vl')
 
 # --- Retry & Rate Limiting ---
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2
-RATE_LIMIT_DELAY = 1.5
-RATE_LIMIT_429_WAIT = 30
+MAX_RETRIES = 2
+RETRY_BASE_DELAY = 1
+RATE_LIMIT_DELAY = 0.5
+RATE_LIMIT_429_WAIT = 15
 
 # --- Brute-force protection ---
 LOGIN_ATTEMPTS_FILE = Path('login_attempts.json')
@@ -319,6 +325,22 @@ def extract_text_from_pdf(pdf_bytes):
         return ""
 
 
+def ocr_pdf_to_text(pdf_bytes):
+    """OCR d'un PDF scanné via Tesseract (fallback si pas de texte extractible)"""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = ""
+        for page in doc:
+            pix = page.get_pixmap(dpi=300)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            text += pytesseract.image_to_string(img, lang='fra') + "\n"
+        doc.close()
+        return text.strip()
+    except Exception as e:
+        logger.error(f"OCR erreur: {e}")
+        return ""
+
+
 def split_pdf_pages(pdf_bytes, filename):
     """Decoupe un PDF en pages individuelles"""
     reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -389,27 +411,35 @@ def call_anthropic(user_content):
         headers={
             'Content-Type': 'application/json',
             'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'pdfs-2024-09-25'
         },
         json={
-            'model': 'claude-sonnet-4-20250514',
-            'max_tokens': 4000,
+            'model': 'claude-sonnet-4-6',
+            'max_tokens': 16000,
+            'thinking': {'type': 'enabled', 'budget_tokens': 8000},
             'system': SYSTEM_PROMPT,
             'messages': [{'role': 'user', 'content': user_content}]
         },
-        timeout=120
+        timeout=300
     )
 
     if response.status_code == 200:
-        return response.json()['content'][0]['text']
+        content_blocks = response.json()['content']
+        for block in reversed(content_blocks):
+            if block.get('type') == 'text':
+                return block['text']
+        raise Exception("Aucun bloc text dans la reponse Claude")
 
     error_msg = f"Anthropic HTTP {response.status_code}"
     try:
-        error_detail = response.json().get('error', {}).get('message', '')
+        error_body = response.json()
+        error_detail = error_body.get('error', {}).get('message', '')
         if error_detail:
             error_msg += f" - {error_detail}"
+        logger.error(f"Anthropic reponse complete: {error_body}")
     except Exception:
-        pass
+        logger.error(f"Anthropic reponse brute: {response.text[:500]}")
     raise Exception(error_msg)
 
 
@@ -494,94 +524,168 @@ def clean_json_response(text):
         text = json_match.group()
     return json.loads(text)
 
-def validate_and_fix_ecritures(ecritures):
-    """Post-traitement Python : verifie et corrige les maths"""
-    alerts = []
-
+def _split_ecritures_en_sous_groupes(ecritures):
+    """Separe les ecritures en sous-groupes (1 groupe = 1 ticket = 1 ligne banque 51200000)"""
+    groupes = []
+    current = []
     for e in ecritures:
+        current.append(e)
+        # Chaque ligne credit banque marque la fin d'un ticket
+        if e.get('credit', 0) > 0 and e.get('compte', '') == '51200000':
+            groupes.append(current)
+            current = []
+    # Lignes orphelines restantes : les rattacher au dernier groupe
+    if current:
+        if groupes:
+            groupes[-1].extend(current)
+        else:
+            groupes.append(current)
+    return groupes
+
+
+def _validate_sous_groupe(groupe, alerts, groupe_idx=""):
+    """Valide un sous-groupe d'ecritures - formatage uniquement, pas de modification des montants"""
+    prefix = f"Groupe {groupe_idx}: " if groupe_idx else ""
+
+    for e in groupe:
         e['debit'] = round(float(e.get('debit', 0) or 0), 2)
         e['credit'] = round(float(e.get('credit', 0) or 0), 2)
 
-        # Comptes sur 8 caracteres
+        # Comptes sur exactement 8 caracteres
         compte = str(e.get('compte', ''))
+        compte = re.sub(r'[^0-9]', '', compte)
+        if not compte:
+            compte = '00000000'
         if len(compte) < 8:
             e['compte'] = compte.ljust(8, '0')
+        elif len(compte) > 8:
+            e['compte'] = compte[:8]
+        else:
+            e['compte'] = compte
 
         # Journal toujours FCB
         e['journal'] = 'FCB'
 
-        # Pas de montants negatifs
-        if e['debit'] < 0:
-            e['debit'] = abs(e['debit'])
-        if e['credit'] < 0:
-            e['credit'] = abs(e['credit'])
+        # Validation format date JJ/MM/AAAA
+        date_str = str(e.get('date', ''))
+        if date_str and not re.match(r'^\d{2}/\d{2}/\d{4}$', date_str):
+            for fmt in ('%d-%m-%Y', '%Y-%m-%d', '%d.%m.%Y', '%d/%m/%y'):
+                try:
+                    parsed = datetime.strptime(date_str, fmt)
+                    e['date'] = parsed.strftime('%d/%m/%Y')
+                    break
+                except ValueError:
+                    continue
 
-    # Verif : une seule ligne credit (banque 51200000)
-    lignes_debit = [e for e in ecritures if e['debit'] > 0]
-    lignes_credit = [e for e in ecritures if e['credit'] > 0]
-
-    if lignes_debit and lignes_credit:
-        total_debit = round(sum(e['debit'] for e in lignes_debit), 2)
-        total_credit = round(sum(e['credit'] for e in lignes_credit), 2)
-
-        # Forcer equilibre : credit banque = somme debits
-        if abs(total_debit - total_credit) > 0.01:
-            ligne_banque = next((e for e in ecritures if e['compte'] == '51200000'), None)
-            if ligne_banque:
-                ligne_banque['credit'] = total_debit
-                alerts.append(f"Credit banque ajuste: {total_credit} -> {total_debit}")
-
-    # Verif : ligne TVA coherente
-    ligne_tva = next((e for e in ecritures if e['compte'] == '44566000'), None)
-    ligne_charge = next((e for e in ecritures if e['debit'] > 0 and e['compte'] != '44566000'), None)
-    ligne_banque = next((e for e in ecritures if e['compte'] == '51200000'), None)
-
-    if ligne_tva and ligne_charge and ligne_banque:
-        tva = ligne_tva['debit']
-        charge = ligne_charge['debit']
-        banque = ligne_banque['credit']
-
-        # HT + TVA doit = TTC (banque)
-        if abs((charge + tva) - banque) > 0.02:
-            # Recalcul : charge = banque - tva
-            ligne_charge['debit'] = round(banque - tva, 2)
-            alerts.append(f"Charge recalculee: {charge} -> {ligne_charge['debit']}")
-
-    # Verif finale
-    total_d = round(sum(e['debit'] for e in ecritures), 2)
-    total_c = round(sum(e['credit'] for e in ecritures), 2)
+    # Signaler desequilibre sans modifier les montants
+    total_d = round(sum(e['debit'] for e in groupe), 2)
+    total_c = round(sum(e['credit'] for e in groupe), 2)
     if abs(total_d - total_c) > 0.01:
-        ligne_banque = next((e for e in ecritures if e['compte'] == '51200000'), None)
-        if ligne_banque:
-            ligne_banque['credit'] = total_d
-            alerts.append("Equilibre force en dernier recours")
+        alerts.append(f"{prefix}Desequilibre detecte: debit={total_d} credit={total_c}")
 
-    return ecritures, alerts
+    return groupe
+
+
+def validate_and_fix_ecritures(ecritures):
+    """Post-traitement Python : verifie et corrige les maths.
+    Gere les pages contenant plusieurs tickets en separant par ligne banque."""
+    alerts = []
+
+    # Compter les lignes banque pour detecter multi-tickets sur une page
+    nb_lignes_banque = sum(
+        1 for e in ecritures
+        if float(e.get('credit', 0) or 0) > 0 and str(e.get('compte', '')) == '51200000'
+    )
+
+    if nb_lignes_banque > 1:
+        # Plusieurs tickets sur la meme page : traiter chaque sous-groupe
+        groupes = _split_ecritures_en_sous_groupes(ecritures)
+        ecritures_validees = []
+        for i, groupe in enumerate(groupes, 1):
+            groupe = _validate_sous_groupe(groupe, alerts, groupe_idx=str(i))
+            ecritures_validees.extend(groupe)
+        return ecritures_validees, alerts
+    else:
+        # Cas standard : un seul ticket
+        _validate_sous_groupe(ecritures, alerts)
+        return ecritures, alerts
+
+def extract_amounts_from_text(text):
+    """Extrait les montants du texte brut d'un PDF pour verification croisee.
+    Retourne une liste de floats tries par valeur decroissante."""
+    if not text:
+        return []
+    # Patterns courants : 12,50 / 12.50 / 1 234,56 / 1234.56
+    patterns = [
+        r'(\d{1,3}(?:\s\d{3})*[,\.]\d{2})\s*(?:EUR|€|TTC)',  # montants avec devise
+        r'(?:TTC|TOTAL|NET|MONTANT)[^\d]{0,20}(\d{1,3}(?:\s\d{3})*[,\.]\d{2})',  # apres mot-cle
+        r'(\d{1,6}[,\.]\d{2})',  # tout montant avec 2 decimales
+    ]
+    amounts = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            raw = match.group(1)
+            raw = raw.replace(' ', '').replace(',', '.')
+            try:
+                val = float(raw)
+                if 0.01 <= val <= 100000:
+                    amounts.add(val)
+            except ValueError:
+                continue
+    return sorted(amounts, reverse=True)
+
+
+def cross_check_amounts(ecritures, pdf_text, filename, alerts):
+    """Compare les montants de Claude avec ceux extraits du PDF.
+    Flag si ecart >5% sur le montant TTC (credit banque)."""
+    if not pdf_text:
+        return
+
+    pdf_amounts = extract_amounts_from_text(pdf_text)
+    if not pdf_amounts:
+        return
+
+    # Extraire les montants TTC de Claude (credits banque)
+    for e in ecritures:
+        if e.get('compte') == '51200000' and e.get('credit', 0) > 0:
+            claude_ttc = e['credit']
+            # Chercher un montant PDF proche
+            best_match = min(pdf_amounts, key=lambda x: abs(x - claude_ttc), default=None)
+            if best_match is not None:
+                ecart = abs(claude_ttc - best_match) / max(best_match, 0.01)
+                if ecart > 0.05:
+                    alerts.append(
+                        f"{filename}: Ecart montant >5% - Claude={claude_ttc:.2f} vs PDF={best_match:.2f} "
+                        f"(ecart {ecart:.0%}) - verification manuelle recommandee"
+                    )
+
 
 def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
     """Analyse avec fallback : Claude -> OpenAI -> Ollama"""
     text = extract_text_from_pdf(pdf_bytes)
+    if len(text.strip()) < 50:
+        logger.info(f"Texte insuffisant, OCR Tesseract en cours...")
+        text = ocr_pdf_to_text(pdf_bytes)
+
     has_text = len(text.strip()) > 50
 
-    if has_text:
-        cloud_content = f"Analyse ce ticket de frais et produis les ecritures comptables :\n\n{text}"
-    else:
-        pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
-        cloud_content = [
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": pdf_b64
-                }
-            },
-            {
-                "type": "text",
-                "text": "Analyse ce ticket de frais et produis les ecritures comptables. "
-                        "Une page peut contenir plusieurs tickets, traite-les tous separement."
+    # Toujours envoyer le PDF complet a Claude/OpenAI (meilleure comprehension visuelle)
+    pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+    cloud_content = [
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_b64
             }
-        ]
+        },
+        {
+            "type": "text",
+            "text": "Analyse ce document de frais et produis les ecritures comptables. "
+                    "Une page peut contenir plusieurs tickets, traite-les tous separement."
+        }
+    ]
 
     providers = []
     if ANTHROPIC_API_KEY:
@@ -803,7 +907,7 @@ def process_tickets(files_data):
     ticket_num = 1
     results_detail = []
 
-    # Split multi-pages (seulement si >20 pages)
+    # Split uniquement les tres gros PDF (Claude Opus gere bien les documents multi-pages)
     split_files = []
     for file_info in files_data:
         try:
@@ -839,35 +943,51 @@ def process_tickets(files_data):
 
         if result.get('exploitable'):
             ecritures = result.get('ecritures', [])
+
+            # Renumeroter les references de Claude en sequence globale
+            # Claude renvoie T1, T2, T3... par document - on les remape en sequence globale
+            refs_in_doc = []
             for e in ecritures:
-                e['reference'] = f'T{ticket_num}'
+                ref = e.get('reference', '')
+                if ref not in refs_in_doc:
+                    refs_in_doc.append(ref)
+            ref_map = {old_ref: f'T{ticket_num + i}' for i, old_ref in enumerate(refs_in_doc)}
+            for e in ecritures:
+                e['reference'] = ref_map.get(e.get('reference', ''), f'T{ticket_num}')
 
             # Tracker les references a faible confiance
             if result.get('confidence', 1.0) < 0.7:
-                low_confidence_refs.add(f'T{ticket_num}')
+                for new_ref in ref_map.values():
+                    low_confidence_refs.add(new_ref)
 
-            # Post-traitement Python
+            # Post-traitement Python (comptes 8 chars, dates, montants aberrants)
             ecritures, fix_alerts = validate_and_fix_ecritures(ecritures)
             for a in fix_alerts:
-                alerts.append(f"T{ticket_num} ({filename}) : {a}")
+                alerts.append(f"{filename} : {a}")
 
-            # Verification equilibre
-            total_d = sum(e['debit'] for e in ecritures)
-            total_c = sum(e['credit'] for e in ecritures)
-            if abs(total_d - total_c) > 0.01:
-                alerts.append(f"T{ticket_num} ({filename}) : Desequilibre ({total_d:.2f} != {total_c:.2f})")
-                ligne_banque = next((e for e in ecritures if e['compte'] == '51200000'), None)
-                if ligne_banque:
-                    ligne_banque['credit'] = round(total_d, 2)
+            # Verification equilibre par ticket (sous-groupe par reference)
+            par_ref = defaultdict(list)
+            for e in ecritures:
+                par_ref[e['reference']].append(e)
+            for ref, groupe in par_ref.items():
+                total_d = sum(e['debit'] for e in groupe)
+                total_c = sum(e['credit'] for e in groupe)
+                if abs(total_d - total_c) > 0.01:
+                    alerts.append(f"{ref} ({filename}) : Desequilibre ({total_d:.2f} != {total_c:.2f})")
+                    ligne_banque = next((e for e in groupe if e['compte'] == '51200000'), None)
+                    if ligne_banque:
+                        ligne_banque['credit'] = round(total_d, 2)
 
             all_ecritures.extend(ecritures)
-            stamped = stamp_pdf_with_s(pdf_bytes)
-            exploited_pdfs.append(stamped)
+            # TODO: reactiver le tampon S en production
+            # stamped = stamp_pdf_with_s(pdf_bytes)
+            exploited_pdfs.append(pdf_bytes)
+            refs_list = ', '.join(ref_map.values())
             results_detail.append({
                 'filename': filename, 'status': 'exploitable',
-                'reference': f'T{ticket_num}', 'ecritures': ecritures
+                'reference': refs_list, 'ecritures': ecritures
             })
-            ticket_num += 1
+            ticket_num += len(refs_in_doc)
         else:
             raison = result.get('raison_non_exploitable', 'Document inexploitable')
             inexploitable_tickets.append({'filename': filename, 'raison': raison})

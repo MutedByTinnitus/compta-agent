@@ -1,0 +1,6 @@
+.env
+__pycache__/
+logs/
+outputs/
+login_attempts.json
+*.pyc

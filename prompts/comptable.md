@@ -47,5 +47,7 @@ exploitable=false UNIQUEMENT si :
 - Informations essentielles manquantes (montant, date)
 Ne juge JAMAIS la nature professionnelle ou non de la dépense.
 
+AVANT DE RÉPONDRE : Vérifie chaque écriture en recalculant HT + TVA = TTC et somme débits = somme crédits. Si ça ne colle pas, corrige avant de produire le JSON.
+
 Réponds UNIQUEMENT avec un JSON valide sans backticks ni texte autour :
 {"exploitable": true, "raison_non_exploitable": "", "ecritures": [{"date": "JJ/MM/AAAA", "reference": "T1", "journal": "FCB", "compte": "XXXXXXXX", "libelle": "Fournisseur - Nature de la dépense", "debit": 0.00, "credit": 0.00}], "confidence": 0.95}
