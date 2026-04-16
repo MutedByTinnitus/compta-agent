@@ -2,5 +2,8 @@
 __pycache__/
 logs/
 outputs/
+cache/
+credentials/
+!credentials/.gitkeep
 login_attempts.json
 *.pyc

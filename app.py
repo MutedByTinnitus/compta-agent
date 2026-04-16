@@ -44,9 +44,6 @@ from PyPDF2 import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.lib.colors import red, black
 from reportlab.lib.pagesizes import A4
-import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image
 
 app = Flask(__name__)
 
@@ -86,9 +83,10 @@ APP_PASSWORD_PLAIN = os.environ.get('APP_PASSWORD', 'changeme')
 
 # --- API Keys ---
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
-OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
-OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen3-vl')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', '')
+GOOGLE_DOCAI_PROJECT_ID = os.environ.get('GOOGLE_DOCAI_PROJECT_ID', '')
+GOOGLE_DOCAI_PROCESSOR_ID = os.environ.get('GOOGLE_DOCAI_PROCESSOR_ID', '')
 
 # --- Retry & Rate Limiting ---
 MAX_RETRIES = 2
@@ -107,9 +105,12 @@ PROCESS_RATE_LIMIT = {}
 # --- Webhook ---
 WEBHOOK_TOKEN = os.environ.get('WEBHOOK_TOKEN', '')
 
-# --- Dossiers (temporaires, nettoyes apres usage) ---
+# --- Dossiers ---
 OUTPUT_FOLDER = Path('outputs')
 OUTPUT_FOLDER.mkdir(exist_ok=True)
+CACHE_FOLDER = Path('cache')
+CACHE_FOLDER.mkdir(exist_ok=True)
+CACHE_ENABLED = os.environ.get('CACHE_ENABLED', 'true').lower() == 'true'
 
 # --- Auto-delete : supprimer les fichiers de plus de X minutes ---
 FILE_RETENTION_MINUTES = int(os.environ.get('FILE_RETENTION_MINUTES', '10'))
@@ -312,33 +313,119 @@ def security_headers(response):
 # UTILITAIRES PDF
 # ===================================================================
 
-def extract_text_from_pdf(pdf_bytes):
-    """Extrait le texte d'un PDF avec PyMuPDF"""
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        text = ""
-        for page in doc:
-            text += page.get_text()
-        doc.close()
-        return text.strip()
-    except Exception:
-        return ""
+
+def _annotate_docai_text(doc, raw_text):
+    """Annote le texte DocAI avec des marqueurs de confiance par token.
+    [?] = confiance 0.70-0.89 (lecture incertaine)
+    [??] = confiance < 0.70 (lecture très incertaine)
+    Les tokens sans marqueur ont une confiance >= 0.90."""
+    if not raw_text:
+        return raw_text
+
+    # Collecter tous les tokens avec leur confiance et position dans le texte
+    low_confidence_spans = []  # (start, end, marker)
+
+    for page in doc.get('pages', []):
+        for token in page.get('tokens', []):
+            conf = token.get('layout', {}).get('confidence', 1.0)
+            if conf is None:
+                conf = 1.0
+            if conf >= 0.90:
+                continue
+
+            marker = '[??]' if conf < 0.70 else '[?]'
+
+            # Extraire la position du token dans le texte via textAnchor
+            text_anchor = token.get('layout', {}).get('textAnchor', {})
+            for seg in text_anchor.get('textSegments', []):
+                start = int(seg.get('startIndex', 0))
+                end = int(seg.get('endIndex', start))
+                if end > start:
+                    low_confidence_spans.append((start, end, marker))
+
+    if not low_confidence_spans:
+        return raw_text
+
+    # Trier par position et construire le texte annoté
+    low_confidence_spans.sort(key=lambda x: x[0])
+    result = []
+    prev_end = 0
+    for start, end, marker in low_confidence_spans:
+        if start < prev_end:
+            continue  # overlap, skip
+        result.append(raw_text[prev_end:start])
+        result.append(raw_text[start:end] + marker)
+        prev_end = end
+    result.append(raw_text[prev_end:])
+
+    annotated = ''.join(result)
+    n_uncertain = sum(1 for _, _, m in low_confidence_spans if m == '[?]')
+    n_very_uncertain = sum(1 for _, _, m in low_confidence_spans if m == '[??]')
+    if n_uncertain or n_very_uncertain:
+        logger.info(
+            f"  [DocAI] Annotation confiance: {n_uncertain} tokens [?] (0.70-0.89), "
+            f"{n_very_uncertain} tokens [??] (<0.70)"
+        )
+    return annotated
 
 
-def ocr_pdf_to_text(pdf_bytes):
-    """OCR d'un PDF scanné via Tesseract (fallback si pas de texte extractible)"""
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        text = ""
-        for page in doc:
-            pix = page.get_pixmap(dpi=300)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            text += pytesseract.image_to_string(img, lang='fra') + "\n"
-        doc.close()
-        return text.strip()
-    except Exception as e:
-        logger.error(f"OCR erreur: {e}")
-        return ""
+def call_google_docai(pdf_bytes):
+    """Extraction de texte via Google Document AI REST API."""
+    import google.oauth2.service_account
+    import google.auth.transport.requests
+
+    if not GOOGLE_DOCAI_PROJECT_ID or not GOOGLE_DOCAI_PROCESSOR_ID:
+        raise Exception("Google DocAI: GOOGLE_DOCAI_PROJECT_ID ou GOOGLE_DOCAI_PROCESSOR_ID non configure")
+
+    credentials_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', '')
+    if not credentials_path or not os.path.exists(credentials_path):
+        raise Exception("Google DocAI: fichier credentials introuvable")
+
+    credentials = google.oauth2.service_account.Credentials.from_service_account_file(
+        credentials_path,
+        scopes=['https://www.googleapis.com/auth/cloud-platform']
+    )
+    auth_req = google.auth.transport.requests.Request()
+    credentials.refresh(auth_req)
+    access_token = credentials.token
+
+    pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+    endpoint = (
+        f"https://eu-documentai.googleapis.com/v1/projects/{GOOGLE_DOCAI_PROJECT_ID}"
+        f"/locations/eu/processors/{GOOGLE_DOCAI_PROCESSOR_ID}:process"
+    )
+
+    response = requests.post(
+        endpoint,
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {access_token}'
+        },
+        json={
+            'rawDocument': {
+                'content': pdf_b64,
+                'mimeType': 'application/pdf'
+            }
+        },
+        timeout=60
+    )
+
+    if response.status_code == 200:
+        doc = response.json().get('document', {})
+        raw_text = doc.get('text', '').strip()
+
+        # Annoter le texte avec les scores de confiance des tokens
+        # [?] = confiance 0.70-0.89 (incertain), [??] = confiance <0.70 (très incertain)
+        try:
+            annotated_text = _annotate_docai_text(doc, raw_text)
+        except Exception as e:
+            logger.warning(f"  [DocAI] Erreur annotation token confidence: {e}")
+            annotated_text = raw_text
+
+        return annotated_text
+
+    raise Exception(f"Google DocAI HTTP {response.status_code} - {response.text[:300]}")
 
 
 def split_pdf_pages(pdf_bytes, filename):
@@ -411,8 +498,7 @@ def call_anthropic(user_content):
         headers={
             'Content-Type': 'application/json',
             'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'pdfs-2024-09-25'
+            'anthropic-version': '2023-06-01'
         },
         json={
             'model': 'claude-sonnet-4-6',
@@ -443,72 +529,33 @@ def call_anthropic(user_content):
     raise Exception(error_msg)
 
 
-def call_openai(user_content):
-    """Appel OpenAI GPT-4o (fallback 1)"""
-    if not OPENAI_API_KEY:
-        raise Exception("OpenAI: cle API non configuree")
-
-    if isinstance(user_content, list):
-        messages_content = []
-        for item in user_content:
-            if item.get('type') == 'text':
-                messages_content.append({"type": "text", "text": item['text']})
-            elif item.get('type') == 'document':
-                messages_content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{item['source']['media_type']};base64,{item['source']['data']}"
-                    }
-                })
-    else:
-        messages_content = user_content
+def call_gemini(user_content):
+    """Appel Gemini Flash API - texte uniquement, JSON structure force"""
+    if not GEMINI_API_KEY:
+        raise Exception("Gemini: cle API non configuree")
 
     response = requests.post(
-        'https://api.openai.com/v1/chat/completions',
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {OPENAI_API_KEY}'
-        },
+        f'https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}',
+        headers={'Content-Type': 'application/json'},
         json={
-            'model': 'gpt-4o',
-            'max_tokens': 4000,
-            'messages': [
-                {'role': 'system', 'content': SYSTEM_PROMPT},
-                {'role': 'user', 'content': messages_content}
-            ]
+            'system_instruction': {'parts': [{'text': SYSTEM_PROMPT}]},
+            'contents': [{'parts': [{'text': user_content}]}],
         },
-        timeout=120
+        timeout=45
     )
 
     if response.status_code == 200:
-        return response.json()['choices'][0]['message']['content']
-    raise Exception(f"OpenAI HTTP {response.status_code}")
-
-
-def call_ollama(text_content):
-    """Appel Ollama local (fallback 2 - texte uniquement)"""
-    if not text_content or not isinstance(text_content, str):
-        raise Exception("Ollama: pas de texte disponible")
-
-    prompt = f"{SYSTEM_PROMPT}\n\nAnalyse ce ticket de frais :\n\n{text_content}"
-
-    try:
-        response = requests.post(
-            f'{OLLAMA_URL}/api/generate',
-            json={
-                'model': OLLAMA_MODEL,
-                'prompt': prompt,
-                'stream': False,
-                'options': {'temperature': 0.1, 'num_predict': 4000}
-            },
-            timeout=180
-        )
-    except requests.exceptions.ConnectionError:
-        raise Exception("Ollama: serveur non accessible")
-
-    if response.status_code == 200:
-        return response.json().get('response', '')
-    raise Exception(f"Ollama HTTP {response.status_code}")
+        # Avec thinking activé, la réponse peut contenir plusieurs parts :
+        # une "thought" (signature interne) + la réponse text.
+        # On ignore les thoughts et on prend la première part de type text.
+        parts = response.json()['candidates'][0]['content']['parts']
+        for part in parts:
+            if part.get('thought'):
+                continue
+            if 'text' in part:
+                return part['text']
+        raise Exception("Gemini: aucune part text dans la réponse")
+    raise Exception(f"Gemini HTTP {response.status_code} - {response.text[:200]}")
 
 
 # ===================================================================
@@ -524,233 +571,643 @@ def clean_json_response(text):
         text = json_match.group()
     return json.loads(text)
 
-def _split_ecritures_en_sous_groupes(ecritures):
-    """Separe les ecritures en sous-groupes (1 groupe = 1 ticket = 1 ligne banque 51200000)"""
-    groupes = []
-    current = []
-    for e in ecritures:
-        current.append(e)
-        # Chaque ligne credit banque marque la fin d'un ticket
-        if e.get('credit', 0) > 0 and e.get('compte', '') == '51200000':
-            groupes.append(current)
-            current = []
-    # Lignes orphelines restantes : les rattacher au dernier groupe
-    if current:
-        if groupes:
-            groupes[-1].extend(current)
-        else:
-            groupes.append(current)
-    return groupes
-
-
-def _validate_sous_groupe(groupe, alerts, groupe_idx=""):
-    """Valide un sous-groupe d'ecritures - formatage uniquement, pas de modification des montants"""
-    prefix = f"Groupe {groupe_idx}: " if groupe_idx else ""
-
-    for e in groupe:
-        e['debit'] = round(float(e.get('debit', 0) or 0), 2)
-        e['credit'] = round(float(e.get('credit', 0) or 0), 2)
-
-        # Comptes sur exactement 8 caracteres
-        compte = str(e.get('compte', ''))
-        compte = re.sub(r'[^0-9]', '', compte)
-        if not compte:
-            compte = '00000000'
-        if len(compte) < 8:
-            e['compte'] = compte.ljust(8, '0')
-        elif len(compte) > 8:
-            e['compte'] = compte[:8]
-        else:
-            e['compte'] = compte
-
-        # Journal toujours FCB
-        e['journal'] = 'FCB'
-
-        # Validation format date JJ/MM/AAAA
-        date_str = str(e.get('date', ''))
-        if date_str and not re.match(r'^\d{2}/\d{2}/\d{4}$', date_str):
-            for fmt in ('%d-%m-%Y', '%Y-%m-%d', '%d.%m.%Y', '%d/%m/%y'):
-                try:
-                    parsed = datetime.strptime(date_str, fmt)
-                    e['date'] = parsed.strftime('%d/%m/%Y')
-                    break
-                except ValueError:
-                    continue
-
-    # Signaler desequilibre sans modifier les montants
-    total_d = round(sum(e['debit'] for e in groupe), 2)
-    total_c = round(sum(e['credit'] for e in groupe), 2)
-    if abs(total_d - total_c) > 0.01:
-        alerts.append(f"{prefix}Desequilibre detecte: debit={total_d} credit={total_c}")
-
-    return groupe
-
-
-def validate_and_fix_ecritures(ecritures):
-    """Post-traitement Python : verifie et corrige les maths.
-    Gere les pages contenant plusieurs tickets en separant par ligne banque."""
-    alerts = []
-
-    # Compter les lignes banque pour detecter multi-tickets sur une page
-    nb_lignes_banque = sum(
-        1 for e in ecritures
-        if float(e.get('credit', 0) or 0) > 0 and str(e.get('compte', '')) == '51200000'
+def fix_ticket_mixte_carburant(ticket, ocr_text):
+    """Corrige un ticket carburant mixte (carburant + boutique) en isolant
+    le montant carburant via les codes TVA TotalEnergies/ESSO (H=carburant, Q=boutique)."""
+    logger.info(
+        f"  [Fix mixte] Analyse ticket {ticket.get('fournisseur','?')} {ticket.get('date','?')} "
+        f"ttc={ticket.get('montant_ttc')} — ocr_text[:200]={repr(ocr_text[:200])}"
     )
 
-    if nb_lignes_banque > 1:
-        # Plusieurs tickets sur la meme page : traiter chaque sous-groupe
-        groupes = _split_ecritures_en_sous_groupes(ecritures)
-        ecritures_validees = []
-        for i, groupe in enumerate(groupes, 1):
-            groupe = _validate_sous_groupe(groupe, alerts, groupe_idx=str(i))
-            ecritures_validees.extend(groupe)
-        return ecritures_validees, alerts
-    else:
-        # Cas standard : un seul ticket
-        _validate_sous_groupe(ecritures, alerts)
-        return ecritures, alerts
+    if not ocr_text:
+        return ticket
 
-def extract_amounts_from_text(text):
-    """Extrait les montants du texte brut d'un PDF pour verification croisee.
-    Retourne une liste de floats tries par valeur decroissante."""
-    if not text:
-        return []
-    # Patterns courants : 12,50 / 12.50 / 1 234,56 / 1234.56
-    patterns = [
-        r'(\d{1,3}(?:\s\d{3})*[,\.]\d{2})\s*(?:EUR|€|TTC)',  # montants avec devise
-        r'(?:TTC|TOTAL|NET|MONTANT)[^\d]{0,20}(\d{1,3}(?:\s\d{3})*[,\.]\d{2})',  # apres mot-cle
-        r'(\d{1,6}[,\.]\d{2})',  # tout montant avec 2 decimales
-    ]
-    amounts = set()
-    for pattern in patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            raw = match.group(1)
-            raw = raw.replace(' ', '').replace(',', '.')
-            try:
-                val = float(raw)
-                if 0.01 <= val <= 100000:
-                    amounts.add(val)
-            except ValueError:
-                continue
-    return sorted(amounts, reverse=True)
+    has_h = bool(re.search(r'H\s*20[,.]?0*%?', ocr_text))
+    has_q = bool(re.search(r'Q\s*20[,.]?0*%?', ocr_text))
+
+    logger.info(f"  [Fix mixte] Pattern H trouvé: {has_h} / Pattern Q trouvé: {has_q}")
+
+    if not (has_h and has_q):
+        return ticket
+
+    # Ticket mixte détecté : chercher la ligne H (carburant)
+    # Format TotalEnergies : H 20,00% <HT> <TVA> <TTC>
+    # Exemple : "H 20,00% 55,01 45,84 9,17" → HT=55,01  TVA=45,84  TTC=9,17 (NON)
+    # Exemple réel : "H 20,00% 55,01 45,84 9,17" → groupe1=55,01 groupe2=45,84 groupe3=9,17
+    match = re.search(
+        r'H\s*20[,.]?0*%?\s+([\d]+[,.][\d]+)\s+([\d]+[,.][\d]+)\s+([\d]+[,.][\d]+)',
+        ocr_text
+    )
+    if not match:
+        match = re.search(
+            r'H\s+20[,.]00%\s+([\d,\.]+)\s+([\d,\.]+)\s+([\d,\.]+)',
+            ocr_text
+        )
+
+    if not match:
+        ticket = dict(ticket)
+        ticket['confidence'] = min(float(ticket.get('confidence', 1.0) or 1.0), 0.65)
+        existing = ticket.get('raison_rejet', '') or ''
+        note = "Ticket mixte détecté mais montant carburant non isolable - vérification manuelle requise"
+        ticket['raison_rejet'] = (existing + " | " + note).strip(" |") if existing else note
+        logger.warning(
+            f"  [Fix mixte] {ticket.get('fournisseur','?')} {ticket.get('date','?')} : "
+            f"ticket mixte carburant+boutique, ligne H non parsable"
+        )
+        return ticket
+
+    # Logger les 3 valeurs capturées pour déterminer l'ordre réel (HT/TVA/TTC ou autre)
+    g1 = match.group(1)
+    g2 = match.group(2)
+    g3 = match.group(3)
+    logger.info(
+        f"  [Fix mixte] Ligne H capturée — groupe1={g1} groupe2={g2} groupe3={g3} "
+        f"(attendu selon TotalEnergies: HT / TVA / TTC)"
+    )
+
+    ancien_ttc = float(ticket.get('montant_ttc', 0) or 0)
+    # Format TotalEnergies : H 20,00% <HT> <TVA> <TTC> → groupe3 = TTC
+    nouveau_ht  = float(g1.replace(',', '.'))
+    nouveau_tva = float(g2.replace(',', '.'))
+    nouveau_ttc = float(g3.replace(',', '.'))
+
+    ticket = dict(ticket)
+    ticket['montant_ttc'] = nouveau_ttc
+    ticket['montant_ht']  = nouveau_ht
+    ticket['montant_tva'] = nouveau_tva
+    # Remonter la confidence : la correction réussie valide le ticket
+    ticket['confidence'] = max(0.88, float(ticket.get('confidence', 0.88) or 0.88))
+
+    logger.warning(
+        f"  [Fix mixte] {ticket.get('fournisseur','?')} {ticket.get('date','?')} : "
+        f"ttc corrigé {ancien_ttc}€ → {nouveau_ttc}€ (carburant seul, boutique exclue) "
+        f"→ confidence remontée à {ticket['confidence']}"
+    )
+
+    existing = ticket.get('raison_rejet', '') or ''
+    note = (
+        f"Ticket mixte carburant+boutique : seul le carburant "
+        f"comptabilisé ({nouveau_ttc}€). Articles boutique exclus."
+    )
+    ticket['raison_rejet'] = (existing + " | " + note).strip(" |") if existing else note
+
+    return ticket
 
 
-def cross_check_amounts(ecritures, pdf_text, filename, alerts):
-    """Compare les montants de Claude avec ceux extraits du PDF.
-    Flag si ecart >5% sur le montant TTC (credit banque)."""
-    if not pdf_text:
-        return
+def filter_tickets_fiables(tickets, ocr_text):
+    """Filtre les tickets avant calcul comptable.
+    Retourne (tickets_ok, tickets_rejetes).
+    tickets_rejetes = liste de dicts ticket + 'raison_rejet'."""
+    tickets_ok = []
+    tickets_rejetes = []
 
-    pdf_amounts = extract_amounts_from_text(pdf_text)
-    if not pdf_amounts:
-        return
+    # Critere 5 : OCR insuffisant -> tous rejetés
+    if len(ocr_text.strip()) < 50:
+        for t in tickets:
+            t_rej = dict(t)
+            t_rej['raison_rejet'] = "Scan illisible (OCR insuffisant)"
+            tickets_rejetes.append(t_rej)
+        return tickets_ok, tickets_rejetes
 
-    # Extraire les montants TTC de Claude (credits banque)
-    for e in ecritures:
-        if e.get('compte') == '51200000' and e.get('credit', 0) > 0:
-            claude_ttc = e['credit']
-            # Chercher un montant PDF proche
-            best_match = min(pdf_amounts, key=lambda x: abs(x - claude_ttc), default=None)
-            if best_match is not None:
-                ecart = abs(claude_ttc - best_match) / max(best_match, 0.01)
-                if ecart > 0.05:
-                    alerts.append(
-                        f"{filename}: Ecart montant >5% - Claude={claude_ttc:.2f} vs PDF={best_match:.2f} "
-                        f"(ecart {ecart:.0%}) - verification manuelle recommandee"
+    acceptes = []  # pour detection doublons
+
+    for t in tickets:
+        raison = None
+
+        # Critere 1 : montant_ttc manquant
+        ttc = float(t.get('montant_ttc', 0) or 0)
+        if ttc == 0:
+            raison = "Montant TTC illisible ou absent"
+
+        # Critere 2 : date manquante ou mauvais format
+        elif not re.match(r'^\d{2}/\d{2}/\d{4}$', str(t.get('date', ''))):
+            raison = "Date manquante ou illisible"
+
+        # Critere 2b : dépense personnelle non professionnelle
+        if raison is None:
+            fournisseur_lower = str(t.get('fournisseur', '')).lower()
+            PERSO_EXACT = ['free mobile', 'fnac', 'amazon', 'mcdo', 'mcdonald', 'auchan.fr']
+            PERSO_WORD = ['action']  # mot isolé (magasin Action)
+            is_perso = False
+            for kw in PERSO_EXACT:
+                if kw in fournisseur_lower:
+                    is_perso = True
+                    break
+            if not is_perso:
+                # "free" seul (pas "free mobile" déjà géré) — éviter faux positifs
+                if re.search(r'\bfree\b', fournisseur_lower):
+                    is_perso = True
+            if not is_perso:
+                # "action" seul (magasin), pas "station" ou autre
+                if re.search(r'\baction\b', fournisseur_lower):
+                    is_perso = True
+            if not is_perso:
+                # "carrefour market" mais PAS "carrefour carburant"
+                if 'carrefour' in fournisseur_lower and 'market' in fournisseur_lower:
+                    is_perso = True
+            if is_perso:
+                raison = "Dépense personnelle"
+
+        # Fix ticket mixte carburant+boutique (avant les filtres de confiance)
+        if raison is None and str(t.get('type', '')).lower() == 'carburant':
+            t = fix_ticket_mixte_carburant(t, ocr_text)
+            ttc = float(t.get('montant_ttc', 0) or 0)  # rafraîchir ttc après correction
+
+        # Critere 3b : cohérence métier HT + TVA ≈ TTC (±0.02€)
+        if raison is None:
+            ht = float(t.get('montant_ht', 0) or 0)
+            tva = float(t.get('montant_tva', 0) or 0)
+            if ht > 0 and tva > 0:
+                ecart = abs((ht + tva) - ttc)
+                if ecart > 0.02:
+                    t = dict(t)
+                    t['confidence'] = min(float(t.get('confidence', 1.0) or 1.0), 0.75)
+                    logger.warning(
+                        f"  [Filtre] {t.get('fournisseur','?')} : HT({ht})+TVA({tva})={round(ht+tva,2)} "
+                        f"≠ TTC({ttc}) (écart {ecart:.2f}€) → confidence abaissée à {t['confidence']}"
                     )
+
+        # Critere 3c : année de la date dans [2020, année courante + 1]
+        if raison is None:
+            date_str = str(t.get('date', ''))
+            date_match = re.match(r'^\d{2}/\d{2}/(\d{4})$', date_str)
+            if date_match:
+                annee = int(date_match.group(1))
+                annee_max = datetime.now().year + 1
+                if annee < 2020 or annee > annee_max:
+                    t = dict(t)
+                    t['confidence'] = min(float(t.get('confidence', 1.0) or 1.0), 0.70)
+                    logger.warning(
+                        f"  [Filtre] {t.get('fournisseur','?')} : année {annee} hors plage "
+                        f"[2020, {annee_max}] → confidence abaissée à {t['confidence']}"
+                    )
+
+        # Critere 3 : confidence faible (après ajustements 3b/3c)
+        if raison is None:
+            conf = float(t.get('confidence', 1.0) or 1.0)
+            if conf <= 0.60:
+                raison = f"Lecture incertaine (confidence {conf:.0%})"
+
+        # Critere 4 : doublon (meme fournisseur + meme ttc + date a ±1 jour)
+        if raison is None:
+            fournisseur = str(t.get('fournisseur', '')).strip().lower()
+            try:
+                date_t = datetime.strptime(t['date'], '%d/%m/%Y')
+            except (ValueError, KeyError):
+                date_t = None
+
+            for a in acceptes:
+                fournisseur_a = str(a.get('fournisseur', '')).strip().lower()
+                ttc_a = float(a.get('montant_ttc', 0) or 0)
+                try:
+                    date_a = datetime.strptime(a['date'], '%d/%m/%Y')
+                except (ValueError, KeyError):
+                    date_a = None
+
+                if (fournisseur == fournisseur_a and abs(ttc - ttc_a) < 0.01
+                        and date_t and date_a and abs((date_t - date_a).days) <= 1):
+                    raison = "Doublon detecte"
+                    break
+
+        if raison:
+            t_rej = dict(t)
+            t_rej['raison_rejet'] = raison
+            tickets_rejetes.append(t_rej)
+            logger.info(f"  [Filtre] Ticket rejete ({raison}) : {t.get('fournisseur')} {t.get('montant_ttc')}")
+        else:
+            acceptes.append(t)
+            tickets_ok.append(t)
+
+    return tickets_ok, tickets_rejetes
+
+
+def cross_validate_against_ocr(tickets, ocr_text):
+    """Vérifie que chaque montant TTC est retrouvable dans le texte OCR brut.
+    Si absent, abaisse la confidence à 0.70 et ajoute une raison_rejet."""
+    if not ocr_text or len(ocr_text.strip()) < 50:
+        return tickets
+
+    def normalize_ocr(text):
+        """Normalise le texte OCR pour la recherche de montants :
+        - supprime les espaces parasites entre chiffres (ex: "1 31.55" → "131.55")
+        - remplace les virgules entre chiffres par des points (ex: "131,55" → "131.55")
+        """
+        # Répéter 3x pour gérer les espaces multiples entre chiffres
+        for _ in range(3):
+            text = re.sub(r'(\d)\s+(\d)', r'\1\2', text)
+        # Virgules entre chiffres → points
+        text = re.sub(r'(\d),(\d)', r'\1.\2', text)
+        return text
+
+    def build_formats(amount):
+        """Génère toutes les représentations normalisées d'un montant."""
+        fmts = set()
+        fmts.add(f"{amount:.2f}")                      # 131.55
+        fmts.add(f"{amount:.1f}")                      # 131.5
+        if amount == int(amount):
+            fmts.add(str(int(amount)))                 # 131
+        for f in list(fmts):
+            fmts.add(f + "€")
+            fmts.add(f + " €")
+            fmts.add(f + " EUR")
+        return fmts
+
+    def find_in_ocr(amount, normalized_text, tol=0.10):
+        """Cherche le montant dans le texte OCR normalisé.
+        Tolérance ±0.10€ pour absorber les erreurs OCR résiduelles."""
+        # Valeur exacte
+        for fmt in build_formats(amount):
+            if fmt in normalized_text:
+                return True
+        # Valeurs à ±tol
+        for delta in [tol, -tol, tol/2, -tol/2]:
+            candidate = round(amount + delta, 2)
+            if candidate > 0:
+                for fmt in build_formats(candidate):
+                    if fmt in normalized_text:
+                        return True
+        return False
+
+    # Normaliser le texte OCR une seule fois pour tous les tickets
+    normalized_ocr = normalize_ocr(ocr_text)
+    logger.info(f"  [OCR-XVal] texte normalisé[:100]={repr(normalized_ocr[:100])}")
+
+    validated = []
+    for t in tickets:
+        t = dict(t)
+        ttc = float(t.get('montant_ttc', 0) or 0)
+        if ttc > 0 and not find_in_ocr(ttc, normalized_ocr):
+            current_conf = float(t.get('confidence', 1.0) or 1.0)
+            t['confidence'] = min(current_conf, 0.70)
+            existing = t.get('raison_rejet', '') or ''
+            note = "Montant non confirmé par OCR"
+            t['raison_rejet'] = (existing + " | " + note).strip(" |") if existing else note
+            logger.warning(
+                f"  [OCR-XVal] {t.get('fournisseur','?')} TTC={ttc} : "
+                f"montant absent du texte OCR normalisé → confidence abaissée à {t['confidence']}"
+            )
+        validated.append(t)
+    return validated
+
+
+def generate_ecritures_from_tickets(tickets, start_ref=1):
+    """Moteur comptable Python pur. Equilibre garanti mathematiquement.
+    L'IA extrait les donnees brutes, Python fait TOUS les calculs."""
+
+    COMPTE_MAP = {
+        'carburant': '62520000',
+        'peage':     '62510000',
+        'parking':   '62780000',
+        'repas':     '62560000',
+        'hotel':     '62560100',
+        'train':     '62510000',
+        'transport': '62510000',
+        'fournitures': '60680000',
+        'autre':     '60680000',
+    }
+
+    # 0 = non deductible, 0.80 = 80% deductible, 1.0 = 100% deductible
+    TVA_RULES = {
+        'carburant':   0.80,
+        'peage':       1.00,
+        'parking':     1.00,
+        'fournitures': 1.00,
+        'autre':       1.00,
+        'train':       1.00,
+        'transport':   1.00,
+        'repas':       0,
+        'hotel':       0,
+    }
+
+    ecritures = []
+    alerts = []
+    ref_num = start_ref
+
+    for t in tickets:
+        ref = f'T{ref_num}'
+        ref_num += 1
+
+        date = t.get('date', '')
+        fournisseur = t.get('fournisseur', 'Inconnu')
+        type_dep = t.get('type', 'autre').lower().strip()
+        description = t.get('description', '')
+        libelle = f"{fournisseur} - {description}" if description else fournisseur
+
+        ttc = round(float(t.get('montant_ttc', 0) or 0), 2)
+        tva = round(float(t.get('montant_tva', 0) or 0), 2)
+        ht  = round(float(t.get('montant_ht',  0) or 0), 2)
+
+        if ttc == 0:
+            logger.warning(f"[Compta] {ref} {fournisseur}: montant_ttc=0, ticket ignore")
+            ref_num -= 1
+            continue
+
+        # Recalcul si donnees partielles
+        if ht == 0 and tva > 0:
+            ht = round(ttc - tva, 2)
+        elif tva == 0 and ht > 0:
+            tva = round(ttc - ht, 2)
+
+        compte = COMPTE_MAP.get(type_dep, '60680000')
+        taux = TVA_RULES.get(type_dep, 0)
+
+        def ligne(cpt, debit, credit):
+            return {
+                'date': date, 'reference': ref, 'journal': 'FCB',
+                'compte': cpt, 'libelle': libelle,
+                'debit': round(debit, 2), 'credit': round(credit, 2)
+            }
+
+        if taux == 0:
+            # TVA non deductible : charge = TTC
+            ecritures += [ligne(compte, ttc, 0), ligne('51200000', 0, ttc)]
+
+        elif tva == 0:
+            # Pas de TVA sur le ticket : charge = TTC sans ligne TVA
+            ecritures += [ligne(compte, ttc, 0), ligne('51200000', 0, ttc)]
+
+        elif taux < 1.0:
+            # Carburant : TVA partiellement deductible (80%)
+            tva_ded = round(tva * taux, 2)
+            tva_non_ded = round(tva * (1 - taux), 2)
+            charge = round(ht + tva_non_ded, 2)
+            # Ajustement centimes pour garantir debit = ttc
+            if round(charge + tva_ded, 2) != ttc:
+                charge = round(ttc - tva_ded, 2)
+            ecritures += [ligne(compte, charge, 0), ligne('44566000', tva_ded, 0), ligne('51200000', 0, ttc)]
+            alerts.append(f"{ref} : Carburant TVA 80% appliquee (defaut tourisme) - verifier si vehicule utilitaire (100%)")
+
+        else:
+            # TVA 100% deductible
+            ecritures += [ligne(compte, ht, 0), ligne('44566000', tva, 0), ligne('51200000', 0, ttc)]
+
+        # Verification equilibre (ne devrait jamais echouer)
+        lignes_ref = [e for e in ecritures if e['reference'] == ref]
+        td = round(sum(e['debit'] for e in lignes_ref), 2)
+        tc = round(sum(e['credit'] for e in lignes_ref), 2)
+        if abs(td - tc) > 0.01:
+            logger.error(f"[Compta] BUG EQUILIBRE {ref}: debit={td} credit={tc}")
+
+    return ecritures, ref_num - start_ref, alerts
+
+
+def majority_vote_tickets(runs, filename=""):
+    """Vote champ par champ sur les tickets extraits par N runs Gemini.
+    Gère les runs avec un nombre différent de tickets par exclusion du ticket extra.
+    Retourne un dict JSON final avec tickets votés."""
+    from collections import Counter
+
+    if len(runs) == 1:
+        return runs[0]
+
+    def vote_field(values, numeric=False, tol=0.01):
+        """Retourne (valeur_majoritaire, has_majority)."""
+        if not values:
+            return None, False
+        if numeric:
+            groups = []
+            for v in values:
+                merged = False
+                for g in groups:
+                    if abs(v - g[0]) <= tol:
+                        g.append(v)
+                        merged = True
+                        break
+                if not merged:
+                    groups.append([v])
+            groups.sort(key=len, reverse=True)
+            if len(groups[0]) > len(values) / 2:
+                return round(sum(groups[0]) / len(groups[0]), 2), True
+            return values[0], False
+        else:
+            c = Counter(str(v) for v in values)
+            best_val, best_count = c.most_common(1)[0]
+            if best_count > len(values) / 2:
+                return best_val, True
+            return str(values[0]), False
+
+    def ttc_present_in_others(ttc_val, other_runs, tol=0.01):
+        """Vérifie si un montant TTC est présent (±tol) dans au moins un autre run."""
+        for other_r in other_runs:
+            for t in other_r.get('tickets', []):
+                other_ttc = float(t.get('montant_ttc', 0) or 0)
+                if abs(ttc_val - other_ttc) <= tol:
+                    return True
+        return False
+
+    # Déterminer le nombre majoritaire de tickets
+    nb_per_run = [len(r.get('tickets', [])) for r in runs]
+    nb_majority = Counter(nb_per_run).most_common(1)[0][0]
+
+    # Aligner les runs minoritaires : exclure les tickets "extra"
+    aligned_runs = []
+    for r in runs:
+        tickets = list(r.get('tickets', []))
+        if len(tickets) == nb_majority:
+            aligned_runs.append(tickets)
+            continue
+
+        # Ce run a plus de tickets : identifier et exclure le(s) ticket(s) extra
+        # Un ticket extra = son montant_ttc absent (±0.01€) de TOUS les autres runs
+        other_runs = [other_r for other_r in runs if other_r is not r]
+        filtered = [
+            t for t in tickets
+            if ttc_present_in_others(float(t.get('montant_ttc', 0) or 0), other_runs)
+        ]
+        if len(filtered) == nb_majority:
+            excluded = [t for t in tickets if t not in filtered]
+            for ex in excluded:
+                logger.info(
+                    f"  [Majority] Ticket extra exclu : {ex.get('fournisseur','?')} "
+                    f"TTC={ex.get('montant_ttc')} date={ex.get('date')} "
+                    f"(TTC absent dans les autres runs)"
+                )
+            logger.info(
+                f"  [Majority] run aligné : {len(tickets)} → {len(filtered)} tickets"
+            )
+            aligned_runs.append(filtered)
+        else:
+            # Impossible d'aligner proprement : garder les nb_majority premiers
+            logger.warning(
+                f"  [Majority] impossible d'aligner run ({len(tickets)} tickets) → "
+                f"troncature à {nb_majority}"
+            )
+            aligned_runs.append(tickets[:nb_majority])
+
+    # Vote par position sur les runs alignés
+    voted_tickets = []
+    for idx in range(nb_majority):
+        ticket_runs = [run[idx] for run in aligned_runs if idx < len(run)]
+        if not ticket_runs:
+            continue
+
+        voted = {}
+
+        # Champs texte (variations normales, pas d'impact sur confidence)
+        for field in ('fournisseur', 'type', 'description', 'raison_rejet'):
+            val, _ = vote_field([t.get(field, '') for t in ticket_runs], numeric=False)
+            voted[field] = val
+
+        # Date : vote strict — détermine la confidence
+        voted['date'], date_majority = vote_field(
+            [t.get('date', '') for t in ticket_runs], numeric=False
+        )
+
+        # Montant TTC : vote avec tolérance — détermine la confidence
+        voted['montant_ttc'], ttc_majority = vote_field(
+            [float(t.get('montant_ttc', 0) or 0) for t in ticket_runs], numeric=True
+        )
+
+        # Autres montants (variations normales)
+        for field in ('montant_tva', 'montant_ht'):
+            val, _ = vote_field(
+                [float(t.get(field, 0) or 0) for t in ticket_runs], numeric=True
+            )
+            voted[field] = val
+
+        # Confidence : run 1 par défaut, pénalité 0.6 UNIQUEMENT si montant_ttc diverge
+        # (désaccord date seul ignoré : peut venir de tickets proches avec même montant)
+        voted['confidence'] = float(ticket_runs[0].get('confidence', 1.0) or 1.0)
+        if not ttc_majority:
+            voted['confidence'] = min(voted['confidence'], 0.6)
+            logger.warning(
+                f"  [Majority] T{idx+1} ({voted.get('fournisseur','?')}) : "
+                f"désaccord sur ttc → confidence abaissée à {voted['confidence']}"
+            )
+        elif not date_majority:
+            logger.info(
+                f"  [Majority] T{idx+1} ({voted.get('fournisseur','?')}) : "
+                f"désaccord date uniquement (ttc unanime) → confidence inchangée"
+            )
+
+        voted_tickets.append(voted)
+
+    # Inventaire : voter sur les champs
+    inventaires = [r.get('inventaire', {}) for r in runs]
+    voted_inventaire = {}
+    for field in ('total_detectes', 'lisibles', 'partiels', 'illisibles'):
+        vals = [inv.get(field, 0) for inv in inventaires if inv]
+        if vals:
+            voted_inventaire[field] = Counter(vals).most_common(1)[0][0]
+
+    confs_globales = [float(r.get('confidence', 1.0) or 1.0) for r in runs]
+    return {
+        'exploitable': True,
+        'inventaire': voted_inventaire,
+        'tickets': voted_tickets,
+        'confidence': round(sum(confs_globales) / len(confs_globales), 2)
+    }
 
 
 def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
-    """Analyse avec fallback : Claude -> OpenAI -> Ollama"""
-    text = extract_text_from_pdf(pdf_bytes)
+    """Analyse : OCR -> texte -> LLM. Jamais de PDF base64."""
+
+    # Cache SHA-256
+    pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+    cache_file = CACHE_FOLDER / f"{pdf_hash}.json"
+    if CACHE_ENABLED:
+        if cache_file.exists():
+            try:
+                cached = json.loads(cache_file.read_text(encoding='utf-8'))
+                logger.info(f"[Cache] {filename} - hit ({pdf_hash[:8]})")
+                if cached.get('_ocr_text'):
+                    return cached
+                # Cache ancien sans _ocr_text : relancer l'OCR pour le récupérer
+                logger.info(f"[Cache] {filename} - _ocr_text absent, relance OCR")
+            except Exception:
+                pass
+
+    # OCR : toujours via Google DocAI (PyMuPDF supprimé — trop bruité sur les scans)
+    text = ""
+    if GOOGLE_DOCAI_PROJECT_ID and GOOGLE_DOCAI_PROCESSOR_ID:
+        try:
+            text = call_google_docai(pdf_bytes)
+            text_hash = hashlib.sha256(text.encode()).hexdigest()[:8]
+            logger.info(f"  [OCR] DocAI — {len(text)} chars, hash={text_hash}")
+        except Exception as e:
+            logger.error(f"  [OCR] DocAI erreur: {e}")
+
     if len(text.strip()) < 50:
-        logger.info(f"Texte insuffisant, OCR Tesseract en cours...")
-        text = ocr_pdf_to_text(pdf_bytes)
-
-    has_text = len(text.strip()) > 50
-
-    # Toujours envoyer le PDF complet a Claude/OpenAI (meilleure comprehension visuelle)
-    pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
-    cloud_content = [
-        {
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": pdf_b64
-            }
-        },
-        {
-            "type": "text",
-            "text": "Analyse ce document de frais et produis les ecritures comptables. "
-                    "Une page peut contenir plusieurs tickets, traite-les tous separement."
-        }
-    ]
-
-    providers = []
-    if ANTHROPIC_API_KEY:
-        providers.append(("Claude", lambda c=cloud_content: call_anthropic(c)))
-    if OPENAI_API_KEY:
-        providers.append(("OpenAI", lambda c=cloud_content: call_openai(c)))
-    if has_text:
-        providers.append(("Ollama", lambda t=text: call_ollama(t)))
-
-    if not providers:
         return {
             "exploitable": False,
-            "raison_non_exploitable": "Aucun provider IA configure",
-            "ecritures": []
+            "raison_non_exploitable": "Ticket illisible meme apres OCR",
+            "tickets": []
         }
 
-    last_error = ""
-    for provider_name, provider_fn in providers:
-        for attempt in range(MAX_RETRIES):
-            try:
-                logger.info(f"[{provider_name}] {filename} - tentative {attempt+1}/{MAX_RETRIES}")
-                raw_response = provider_fn()
-                result = clean_json_response(raw_response)
-                if 'exploitable' not in result:
-                    raise ValueError("JSON sans champ 'exploitable'")
-                logger.info(f"[{provider_name}] {filename} - OK")
-                return result
+    # TOUJOURS du texte au LLM, JAMAIS du base64
+    cloud_content = f"Voici le texte extrait d'un ticket de frais :\n\n{text}"
 
-            except json.JSONDecodeError as e:
-                last_error = f"{provider_name}: JSON invalide ({e})"
-                logger.info(f"[{provider_name}] JSON invalide, retry...")
-                time.sleep(RETRY_BASE_DELAY)
+    if not GEMINI_API_KEY:
+        return {
+            "exploitable": False,
+            "raison_non_exploitable": "LLM indisponible - réessayer dans quelques minutes",
+            "tickets": []
+        }
 
-            except ValueError as e:
-                last_error = f"{provider_name}: {e}"
-                logger.info(f"[{provider_name}] {e}, retry...")
-                time.sleep(RETRY_BASE_DELAY)
+    # Majority voting : 3 runs indépendants
+    N_RUNS = 3
+    runs = []  # liste de résultats JSON valides
+    for run_idx in range(N_RUNS):
+        try:
+            logger.info(f"[Gemini] {filename} - run {run_idx+1}/{N_RUNS}")
+            raw_response = call_gemini(cloud_content)
+            run_result = clean_json_response(raw_response)
+            if 'exploitable' not in run_result:
+                raise ValueError("JSON sans champ 'exploitable'")
+            runs.append(run_result)
+            logger.info(f"[Gemini] run {run_idx+1} OK — {len(run_result.get('tickets', []))} ticket(s)")
+        except Exception as e:
+            logger.error(f"[Gemini] run {run_idx+1} echec: {e}")
 
-            except Exception as e:
-                error_str = str(e)
-                last_error = f"{provider_name}: {error_str}"
-                logger.error(f"[{provider_name}] Erreur: {error_str}")
+    if not runs:
+        logger.info(f"[Gemini] Echec total — 0 runs valides sur {N_RUNS}")
+        return {
+            "exploitable": False,
+            "raison_non_exploitable": "LLM indisponible - réessayer dans quelques minutes",
+            "tickets": []
+        }
 
-                if '429' in error_str:
-                    wait = RATE_LIMIT_429_WAIT * (attempt + 1)
-                    logger.info(f"[{provider_name}] Rate limit 429, attente {wait}s...")
-                    time.sleep(wait)
-                    continue
-                if '529' in error_str:
-                    wait = RETRY_BASE_DELAY * (attempt + 1) * 2
-                    logger.info(f"[{provider_name}] Surcharge 529, attente {wait}s...")
-                    time.sleep(wait)
-                    continue
-                if '400' in error_str:
-                    logger.info(f"[{provider_name}] Erreur 400, provider suivant")
-                    break
-                time.sleep(RETRY_BASE_DELAY * (attempt + 1))
+    # Vote sur le nombre de tickets
+    nb_runs = [len(r.get('tickets', [])) for r in runs]
+    logger.info(
+        f"  [Majority] {filename} : "
+        + ", ".join(f"run{i+1}={n}" for i, n in enumerate(nb_runs))
+        + f" — {len(runs)}/{N_RUNS} runs valides"
+    )
 
-        logger.info(f"[{provider_name}] Echec apres {MAX_RETRIES} tentatives")
+    from collections import Counter
+    count_nb = Counter(nb_runs)
+    nb_majority = count_nb.most_common(1)[0][0]
+    if len(count_nb) > 1:
+        logger.warning(
+            f"  [Majority] Désaccord sur le nombre de tickets : {dict(count_nb)} → retenu {nb_majority}"
+        )
 
-    return {
-        "exploitable": False,
-        "raison_non_exploitable": f"Analyse impossible: {last_error}",
-        "ecritures": []
-    }
+    # Ne garder que les runs avec le nombre majoritaire
+    runs_majority = [r for r in runs if len(r.get('tickets', [])) == nb_majority]
+
+    result = majority_vote_tickets(runs_majority, filename)
+
+    nb_final = len(result.get('tickets', []))
+    logger.info(f"  [Majority] Final : {nb_final} ticket(s) après vote")
+    for i, t in enumerate(result.get('tickets', [])):
+        logger.info(
+            f"  [T{i+1}] {t.get('fournisseur','?')} | "
+            f"{t.get('date','?')} | "
+            f"ttc={t.get('montant_ttc','?')} | "
+            f"conf={t.get('confidence','?')}"
+        )
+
+    result['_ocr_text'] = text
+
+    if CACHE_ENABLED:
+        try:
+            cache_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+            logger.info(f"[Cache] {filename} - sauvegarde ({pdf_hash[:8]})")
+        except Exception:
+            pass
+
+    return result
 
 
 # ===================================================================
@@ -856,37 +1313,102 @@ def create_excel(all_ecritures, alerts=None, low_confidence_refs=None):
 # ===================================================================
 
 def create_inexploitable_report(inexploitable_tickets):
-    """Cree un PDF listant les tickets inexploitables"""
+    """Cree un PDF listant les tickets inexploitables avec conseils de correction"""
+
+    CONSEILS = {
+        'Scan illisible':     "Renvoyer ce ticket scanne a plat, fond blanc, sans froissures, resolution minimum 300 DPI",
+        'Montant':            "Le montant TTC n'est pas visible. Verifier que le ticket n'est pas coupe ou decolore",
+        'Date manquante':     "La date est absente ou illisible. Renvoyer le ticket complet",
+        'Date manquante ou illisible': "La date est absente ou illisible. Renvoyer le ticket complet",
+        'Lecture incertaine': "Ce ticket presente des zones illisibles. Renvoyer un scan plus net ou la version originale",
+        'Doublon':            "Ce ticket semble deja present dans le lot. Verifier et renvoyer si c'est bien une depense distincte",
+    }
+
+    def get_conseil(raison):
+        for key, conseil in CONSEILS.items():
+            if key.lower() in raison.lower():
+                return conseil
+        return "Verifier ce justificatif et le renvoyer dans un prochain lot"
+
+    # Calcul du montant total non comptabilise
+    total_non_compta = sum(
+        float(t.get('montant_ttc', 0) or 0)
+        for t in inexploitable_tickets
+        if isinstance(t, dict) and float(t.get('montant_ttc', 0) or 0) > 0
+    )
+    nb = len(inexploitable_tickets)
+
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
+    orange = (0.95, 0.5, 0.1)
 
+    # En-tete
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(red)
-    c.drawString(50, height - 60, "Justificatifs inexploitables")
-    c.setFont("Helvetica", 11)
-    c.setFillColor(black)
-    c.drawString(50, height - 85, f"Date de traitement : {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    c.drawString(50, height - 55, "Justificatifs a corriger")
     c.setFont("Helvetica", 10)
-    c.drawString(50, height - 110, "Les documents suivants n'ont pas pu etre exploites.")
-    c.drawString(50, height - 125, "Merci de fournir des justificatifs conformes.")
+    c.setFillColor(black)
+    c.drawString(50, height - 75, f"Date de traitement : {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    # Resumé chiffré
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(red)
+    c.drawString(50, height - 100, f"{nb} ticket(s) non comptabilise(s)")
+    if total_non_compta > 0:
+        c.drawString(50, height - 116, f"Montant total non comptabilise : {total_non_compta:.2f} EUR")
+    c.setFillColor(black)
+    c.setFont("Helvetica", 10)
+    c.drawString(50, height - 136, "Ces justificatifs n'ont pas pu etre integres. Voir les conseils ci-dessous.")
 
     y = height - 165
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(50, y, "Fichier")
-    c.drawString(300, y, "Motif")
-    y -= 5
-    c.line(50, y, width - 50, y)
-    y -= 20
 
-    c.setFont("Helvetica", 10)
     for ticket in inexploitable_tickets:
-        if y < 80:
+        # Chaque ticket prend ~75px, verifier qu'il reste de la place
+        if y < 100:
             c.showPage()
             y = height - 60
-        c.drawString(50, y, ticket['filename'][:35])
-        c.drawString(300, y, ticket['raison'][:50])
-        y -= 18
+
+        # Ligne de separation
+        c.setStrokeColorRGB(0.8, 0.8, 0.8)
+        c.line(50, y + 5, width - 50, y + 5)
+        y -= 5
+
+        # Identite du ticket
+        if isinstance(ticket, dict) and 'fournisseur' in ticket:
+            fournisseur = ticket.get('fournisseur') or 'Inconnu'
+            date_str = ticket.get('date') or 'Date manquante'
+            ttc = float(ticket.get('montant_ttc', 0) or 0)
+            montant_str = f" — {ttc:.2f} EUR" if ttc > 0 else ""
+            identite = f"{fournisseur}  |  {date_str}{montant_str}"
+            raison = ticket.get('raison_rejet', ticket.get('raison', ''))
+        else:
+            identite = str(ticket.get('filename', '?'))[:60] if isinstance(ticket, dict) else str(ticket)[:60]
+            raison = ticket.get('raison', '') if isinstance(ticket, dict) else ''
+
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(black)
+        c.drawString(52, y, identite[:80])
+        y -= 16
+
+        # Raison en orange
+        c.setFont("Helvetica-Bold", 9)
+        c.setFillColorRGB(*orange)
+        c.drawString(52, y, f"Motif : {raison[:80]}")
+        y -= 14
+
+        # Conseil en gris
+        conseil = get_conseil(raison)
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0.3, 0.3, 0.3)
+        # Couper le conseil en deux lignes si trop long
+        if len(conseil) > 90:
+            c.drawString(52, y, conseil[:90])
+            y -= 12
+            c.drawString(52, y, conseil[90:])
+        else:
+            c.drawString(52, y, conseil)
+        y -= 20
 
     c.save()
     buffer.seek(0)
@@ -912,7 +1434,7 @@ def process_tickets(files_data):
     for file_info in files_data:
         try:
             reader = PdfReader(io.BytesIO(file_info['bytes']))
-            if len(reader.pages) > 20:
+            if len(reader.pages) > 1:
                 logger.info(f"Split {file_info['filename']} : {len(reader.pages)} pages")
                 pages = split_pdf_pages(file_info['bytes'], file_info['filename'])
                 split_files.extend(pages)
@@ -934,60 +1456,75 @@ def process_tickets(files_data):
         logger.info(f"[{idx+1}/{total_pages}] {filename}")
         result = analyze_ticket_with_retry(pdf_bytes, filename)
 
-        # Verification confiance
-        if result.get('confidence', 1.0) < 0.7:
-            alerts.append(
-                f"\u26a0\ufe0f Confiance faible ({result['confidence']:.0%}) "
-                f"sur {filename} \u2014 verification manuelle recommandee"
-            )
-
         if result.get('exploitable'):
-            ecritures = result.get('ecritures', [])
+            tickets_bruts = result.get('tickets', [])
 
-            # Renumeroter les references de Claude en sequence globale
-            # Claude renvoie T1, T2, T3... par document - on les remape en sequence globale
-            refs_in_doc = []
-            for e in ecritures:
-                ref = e.get('reference', '')
-                if ref not in refs_in_doc:
-                    refs_in_doc.append(ref)
-            ref_map = {old_ref: f'T{ticket_num + i}' for i, old_ref in enumerate(refs_in_doc)}
-            for e in ecritures:
-                e['reference'] = ref_map.get(e.get('reference', ''), f'T{ticket_num}')
+            if not tickets_bruts:
+                raison = "Aucun ticket extrait par l'IA"
+                inexploitable_tickets.append({'filename': filename, 'raison': raison})
+                alerts.append(f"!! {filename} : {raison}")
+                results_detail.append({'filename': filename, 'status': 'inexploitable', 'raison': raison})
+            else:
+                # Filtrage qualite avant calcul comptable
+                # Utiliser le texte OCR deja extrait (DocAI), pas une nouvelle extraction
+                ocr_text = result.get('_ocr_text', '')
+                logger.info(f"  [Filtre] len(ocr_text)={len(ocr_text)} chars")
+                # cross_validate_against_ocr désactivé : trop de faux positifs sur scans
+                # La protection contre les hallucinations est assurée par le majority voting N=3
+                tickets_ok, tickets_rejetes = filter_tickets_fiables(tickets_bruts, ocr_text)
+                logger.info(f"  [Filtre] {len(tickets_ok)} ok, {len(tickets_rejetes)} rejetes sur {len(tickets_bruts)} extraits")
 
-            # Tracker les references a faible confiance
-            if result.get('confidence', 1.0) < 0.7:
-                for new_ref in ref_map.values():
-                    low_confidence_refs.add(new_ref)
+                # Vérification inventaire LLM vs tickets effectivement extraits
+                inventaire = result.get('inventaire', {})
+                total_detectes = inventaire.get('total_detectes', 0)
+                nb_extraits = len(tickets_ok) + len(tickets_rejetes)
+                if total_detectes > 0 and nb_extraits < total_detectes:
+                    manquants = total_detectes - nb_extraits
+                    alerts.append(
+                        f"!! {filename} : {manquants} ticket(s) détecté(s) par le LLM "
+                        f"mais non extrait(s) — vérifier le scan ({total_detectes} détectés, "
+                        f"{nb_extraits} traités)"
+                    )
+                    logger.warning(
+                        f"  [Inventaire] {total_detectes} détectés, "
+                        f"{nb_extraits} traités — {manquants} manquant(s)"
+                    )
 
-            # Post-traitement Python (comptes 8 chars, dates, montants aberrants)
-            ecritures, fix_alerts = validate_and_fix_ecritures(ecritures)
-            for a in fix_alerts:
-                alerts.append(f"{filename} : {a}")
+                # Ajouter les tickets rejetés au rapport inexploitables
+                for t_rej in tickets_rejetes:
+                    raison_rej = t_rej.get('raison_rejet', 'Ticket rejete')
+                    label = f"{t_rej.get('fournisseur', '?')} {t_rej.get('montant_ttc', 0)}€ ({filename})"
+                    inexploitable_tickets.append({'filename': label, 'raison': raison_rej})
+                    alerts.append(f"!! {label} : {raison_rej}")
 
-            # Verification equilibre par ticket (sous-groupe par reference)
-            par_ref = defaultdict(list)
-            for e in ecritures:
-                par_ref[e['reference']].append(e)
-            for ref, groupe in par_ref.items():
-                total_d = sum(e['debit'] for e in groupe)
-                total_c = sum(e['credit'] for e in groupe)
-                if abs(total_d - total_c) > 0.01:
-                    alerts.append(f"{ref} ({filename}) : Desequilibre ({total_d:.2f} != {total_c:.2f})")
-                    ligne_banque = next((e for e in groupe if e['compte'] == '51200000'), None)
-                    if ligne_banque:
-                        ligne_banque['credit'] = round(total_d, 2)
+                if not tickets_ok:
+                    results_detail.append({'filename': filename, 'status': 'inexploitable', 'raison': 'Tous les tickets rejetes par le filtre qualite'})
+                else:
+                    # Génération des écritures par Python
+                    ecritures, nb_tickets, compta_alerts = generate_ecritures_from_tickets(tickets_ok, start_ref=ticket_num)
+                    alerts.extend(compta_alerts)
+                    logger.info(f"  [Python] {len(ecritures)} ecritures generees pour {len(tickets_ok)} tickets")
 
-            all_ecritures.extend(ecritures)
-            # TODO: reactiver le tampon S en production
-            # stamped = stamp_pdf_with_s(pdf_bytes)
-            exploited_pdfs.append(pdf_bytes)
-            refs_list = ', '.join(ref_map.values())
-            results_detail.append({
-                'filename': filename, 'status': 'exploitable',
-                'reference': refs_list, 'ecritures': ecritures
-            })
-            ticket_num += len(refs_in_doc)
+                    # Vérification d'équilibre (filet de sécurité)
+                    par_ref = defaultdict(list)
+                    for e in ecritures:
+                        par_ref[e['reference']].append(e)
+                    for ref, groupe in par_ref.items():
+                        total_d = round(sum(e['debit'] for e in groupe), 2)
+                        total_c = round(sum(e['credit'] for e in groupe), 2)
+                        if abs(total_d - total_c) > 0.01:
+                            alerts.append(f"{ref} ({filename}) : Desequilibre residuel ({total_d:.2f} != {total_c:.2f})")
+
+                    refs_list = ', '.join(f'T{ticket_num + i}' for i in range(nb_tickets))
+                    all_ecritures.extend(ecritures)
+                    # TODO: reactiver le tampon S en production
+                    # stamped = stamp_pdf_with_s(pdf_bytes)
+                    exploited_pdfs.append(pdf_bytes)
+                    results_detail.append({
+                        'filename': filename, 'status': 'exploitable',
+                        'reference': refs_list, 'ecritures': ecritures
+                    })
+                    ticket_num += nb_tickets
         else:
             raison = result.get('raison_non_exploitable', 'Document inexploitable')
             inexploitable_tickets.append({'filename': filename, 'raison': raison})
@@ -1253,15 +1790,10 @@ def download_file(filename):
 @login_required
 def api_status():
     providers = {
+        'gemini': bool(GEMINI_API_KEY),
         'anthropic': bool(ANTHROPIC_API_KEY),
-        'openai': bool(OPENAI_API_KEY),
-        'ollama': False
+        'docai': bool(GOOGLE_DOCAI_PROJECT_ID and GOOGLE_DOCAI_PROCESSOR_ID),
     }
-    try:
-        r = requests.get(f'{OLLAMA_URL}/api/tags', timeout=3)
-        providers['ollama'] = r.status_code == 200
-    except Exception:
-        pass
 
     return jsonify({
         'providers': providers,
@@ -1330,13 +1862,10 @@ if __name__ == '__main__':
     logger.info(f"  Headers       : CSP, X-Frame-Options, nosniff, no-cache")
 
     logger.info("Providers :")
-    logger.info(f"  Claude  : {'OK' if ANTHROPIC_API_KEY else 'NON'}")
-    logger.info(f"  OpenAI  : {'OK' if OPENAI_API_KEY else 'NON'}")
-    try:
-        r = requests.get(f'{OLLAMA_URL}/api/tags', timeout=3)
-        logger.info(f"  Ollama  : {'OK - ' + OLLAMA_MODEL if r.status_code == 200 else 'NON'}")
-    except Exception:
-        logger.info(f"  Ollama  : NON ({OLLAMA_URL})")
+    docai_ok = bool(GOOGLE_DOCAI_PROJECT_ID and GOOGLE_DOCAI_PROCESSOR_ID)
+    logger.info(f"  OCR Google DocAI : {'OK' if docai_ok else 'NON'}")
+    logger.info(f"  LLM Gemini       : {'OK' if GEMINI_API_KEY else 'NON'}")
+    logger.info(f"  LLM Claude       : {'OK' if ANTHROPIC_API_KEY else 'NON'}")
 
     logger.info(f"  Webhook : {'actif sur /api/webhook' if WEBHOOK_TOKEN else 'desactive (WEBHOOK_TOKEN non defini)'}")
 
