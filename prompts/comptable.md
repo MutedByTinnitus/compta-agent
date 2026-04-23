@@ -29,6 +29,18 @@ RÈGLES ABSOLUES :
 3. Un ticket illisible = confidence 0.3, montant_ttc 0
 4. Ne jamais inventer un montant manquant
 
+PRIORITÉ ABSOLUE : lire le Total CB imprimé
+Sur chaque ticket, cherche en priorité dans cet ordre :
+1. Ligne "Total CB" ou "TOTAL CB"
+2. Ligne "Carte bancaire XX,XX €"
+3. Ligne "Paiement CB"
+4. Ligne "A payer"
+5. Ligne "Total TTC"
+
+Ce montant = montant_ttc sur un ticket simple.
+Sur un ticket mixte H+Q : montant_ttc = ligne H uniquement (pas Total CB).
+Ne JAMAIS calculer HT × 1.20 si Total CB visible.
+
 TICKETS MIXTES CARBURANT + BOUTIQUE (stations TotalEnergies) :
 Quand un ticket contient carburant ET articles boutique :
 

@@ -6,3 +6,5 @@ reportlab==4.2.5
 PyMuPDF==1.25.3
 python-dotenv==1.1.0
 google-auth==2.38.0
+Pillow==11.2.1
+json-repair>=0.30.0
