@@ -1183,7 +1183,10 @@ def filter_tickets_fiables(tickets, ocr_text):
                 note = f"Vérification conseillée (confidence {conf:.0%})"
                 t['raison_rejet'] = (existing + " | " + note).strip(" |") if existing else note
 
-        # Critere 4 : doublon renforcé
+        # Critere 4 : doublon renforcé avec 6 discriminants
+        # (cohérent avec dedup_global_cross_page : 2 tickets même date+TTC+fournisseur
+        # NE SONT PAS des doublons si un discriminant diffère — aller/retour, pompe,
+        # numéro transaction, etc.)
         if raison is None:
             fournisseur = str(t.get('fournisseur', '')).strip().lower()
             mots_f = set(fournisseur.split())
@@ -1207,12 +1210,27 @@ def filter_tickets_fiables(tickets, ocr_text):
                 fournisseur_a = str(a.get('fournisseur', '')).strip().lower()
                 mots_a = set(fournisseur_a.split())
 
-                # Doublon certain : même ttc ET même date exacte
+                # Doublon CANDIDAT : même ttc ET même date exacte
                 if jours == 0:
+                    # Vérifier les 6 discriminants avant de rejeter
+                    if _are_distinct_tickets(t, a):
+                        logger.info(
+                            f"  [Filtre] {t.get('fournisseur','?')} {ttc}€ {t.get('date','?')} "
+                            f"→ jumeau légitime préservé (discriminant trouvé)"
+                        )
+                        continue  # pas un doublon, passer au candidat suivant
                     raison = "Doublon détecté"
                     break
-                # Doublon probable : même ttc + date ±1 jour + mot fournisseur en commun
+
+                # Doublon PROBABLE : même ttc + date ±1 jour + mot fournisseur en commun
                 if jours <= 1 and mots_f & mots_a:
+                    if _are_distinct_tickets(t, a):
+                        logger.info(
+                            f"  [Filtre] {t.get('fournisseur','?')} {ttc}€ "
+                            f"{t.get('date','?')} (écart {jours}j) "
+                            f"→ jumeau légitime préservé (discriminant trouvé)"
+                        )
+                        continue
                     raison = "Doublon probable (même montant, date proche, fournisseur similaire)"
                     break
 
