@@ -90,6 +90,10 @@ GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', '')
 GOOGLE_DOCAI_PROJECT_ID = os.environ.get('GOOGLE_DOCAI_PROJECT_ID', '')
 GOOGLE_DOCAI_PROCESSOR_ID = os.environ.get('GOOGLE_DOCAI_PROCESSOR_ID', '')
 
+# --- Modèle primaire vision (claude | gemini) ---
+PRIMARY_LLM = os.getenv('PRIMARY_LLM', 'claude').lower().strip()
+logger.info(f"  Primary LLM    : {PRIMARY_LLM}")
+
 # --- Retry & Rate Limiting ---
 MAX_RETRIES = 2
 RETRY_BASE_DELAY = 1
@@ -574,6 +578,64 @@ def compress_image_for_judge(png_bytes, max_size_mb=4.5):
     return png_bytes, 'image/png', base64.b64encode(png_bytes).decode('utf-8')
 
 
+def call_claude_vision_primary(png_bytes, extra_prompt=None):
+    """Claude Sonnet 4.6 Vision en mode PRIMAIRE (extraction tickets, thinking activé).
+    Retourne le texte brut JSON (à parser avec clean_json_response).
+    Même format de retour que call_gemini_vision() pour compatibilité pipeline."""
+    if not ANTHROPIC_API_KEY:
+        raise Exception("Anthropic: cle API non configuree")
+
+    _, media_type, image_b64 = compress_image_for_judge(png_bytes)
+    system_text = VISION_PROMPT + (extra_prompt or '')
+
+    response = requests.post(
+        'https://api.anthropic.com/v1/messages',
+        headers={
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+        },
+        json={
+            'model': 'claude-sonnet-4-6',
+            'max_tokens': 8000,
+            'thinking': {'type': 'enabled', 'budget_tokens': 4000},
+            'system': system_text,
+            'messages': [{
+                'role': 'user',
+                'content': [
+                    {
+                        'type': 'image',
+                        'source': {
+                            'type': 'base64',
+                            'media_type': media_type,
+                            'data': image_b64
+                        }
+                    },
+                    {'type': 'text', 'text': 'Analyse cette image selon tes instructions.'}
+                ]
+            }]
+        },
+        timeout=180
+    )
+
+    if response.status_code == 200:
+        content_blocks = response.json()['content']
+        for block in reversed(content_blocks):
+            if block.get('type') == 'text':
+                return block['text']
+        raise Exception("Claude Vision: aucun bloc text dans la réponse")
+
+    error_msg = f"Claude Vision HTTP {response.status_code}"
+    try:
+        error_body = response.json()
+        error_detail = error_body.get('error', {}).get('message', '')
+        if error_detail:
+            error_msg += f" - {error_detail}"
+    except Exception:
+        pass
+    raise Exception(error_msg)
+
+
 def call_claude_vision_judge(png_bytes, extraction_gemini):
     """Appel Claude Sonnet 4.6 Vision en mode judge.
     Compresse l'image en JPEG si elle dépasse la limite de 5 MB d'Anthropic."""
@@ -634,6 +696,49 @@ def call_claude_vision_judge(png_bytes, extraction_gemini):
     except Exception:
         pass
     raise Exception(error_msg)
+
+
+def call_gemini_vision_judge(png_b64, extraction_claude):
+    """Gemini 3 Flash Vision en mode judge (vérif extraction Claude primaire).
+    Retourne le texte brut JSON."""
+    if not GEMINI_API_KEY:
+        raise Exception("Gemini: cle API non configuree")
+
+    extraction_json = json.dumps(extraction_claude, ensure_ascii=False, indent=2)
+    user_text = (
+        f"Voici l'extraction du premier modèle à valider :\n\n{extraction_json}\n\n"
+        f"Analyse l'image et corrige selon tes instructions."
+    )
+
+    response = requests.post(
+        f'https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}',
+        headers={'Content-Type': 'application/json'},
+        json={
+            'system_instruction': {'parts': [{'text': JUDGE_PROMPT}]},
+            'contents': [{
+                'parts': [
+                    {'inline_data': {'mime_type': 'image/png', 'data': png_b64}},
+                    {'text': user_text}
+                ]
+            }],
+            'generationConfig': {
+                'temperature': 0.0,
+                'maxOutputTokens': 8000,
+                'response_mime_type': 'application/json',
+            }
+        },
+        timeout=120
+    )
+
+    if response.status_code == 200:
+        parts = response.json()['candidates'][0]['content']['parts']
+        for part in parts:
+            if part.get('thought'):
+                continue
+            if 'text' in part:
+                return part['text']
+        raise Exception("Gemini judge: aucune part text")
+    raise Exception(f"Gemini judge HTTP {response.status_code} - {response.text[:300]}")
 
 
 def needs_judge(tickets):
@@ -1539,21 +1644,30 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
 
     result = None
     tickets = []
-    MAX_GEMINI_RETRIES = 2
+    MAX_RETRIES_PRIMARY = 2
 
-    for attempt in range(MAX_GEMINI_RETRIES):
-        if not GEMINI_API_KEY:
+    for attempt in range(MAX_RETRIES_PRIMARY):
+        # Vérifier que le modèle primaire est disponible
+        if PRIMARY_LLM == 'claude' and not ANTHROPIC_API_KEY:
+            break
+        if PRIMARY_LLM != 'claude' and not GEMINI_API_KEY:
             break
         try:
-            # Essai 1 : prompt normal — Essai 2+ : prompt renforcé anti-JSON-invalid
-            if attempt == 0:
-                logger.info(f"[Gemini Vision] {filename}")
-                raw = call_gemini_vision(png_b64)
+            # Router extraction primaire selon PRIMARY_LLM
+            if PRIMARY_LLM == 'claude' and ANTHROPIC_API_KEY:
+                if attempt == 0:
+                    logger.info(f"[Claude Vision primary] {filename}")
+                    raw = call_claude_vision_primary(png_bytes)
+                else:
+                    logger.warning(f"[Claude Vision primary] Retry #{attempt} sur {filename}")
+                    raw = call_claude_vision_primary(png_bytes, extra_prompt=JSON_STRICT_ADDON)
             else:
-                logger.warning(
-                    f"[Gemini Vision] Retry #{attempt} avec prompt renforcé sur {filename}"
-                )
-                raw = call_gemini_vision(png_b64, extra_prompt=JSON_STRICT_ADDON)
+                if attempt == 0:
+                    logger.info(f"[Gemini Vision primary] {filename}")
+                    raw = call_gemini_vision(png_b64)
+                else:
+                    logger.warning(f"[Gemini Vision primary] Retry #{attempt} sur {filename}")
+                    raw = call_gemini_vision(png_b64, extra_prompt=JSON_STRICT_ADDON)
 
             result = clean_json_response(raw, filename)
             if 'tickets' not in result:
@@ -1562,10 +1676,11 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
             tickets = result.get('tickets', [])
             nb_vus = result.get('nb_tickets_vus', len(tickets))
             retry_tag = f" [retry #{attempt}]" if attempt > 0 else ""
-            logger.info(f"  [Gemini Vision] {len(tickets)} ticket(s){retry_tag}")
+            primary_label = "Claude Vision" if PRIMARY_LLM == 'claude' else "Gemini Vision"
+            logger.info(f"  [{primary_label}] {len(tickets)} ticket(s){retry_tag}")
 
             if result.get('raisonnement'):
-                logger.info(f"  [Gemini raisonnement] {result['raisonnement'][:200]}")
+                logger.info(f"  [{primary_label} raisonnement] {result['raisonnement'][:200]}")
             for i, t in enumerate(tickets):
                 logger.info(
                     f"  [T{i+1}] {t.get('fournisseur','?')} | "
@@ -1573,79 +1688,97 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
                     f"conf={t.get('confidence','?')}"
                 )
 
-            # Détection de troncature json-repair :
-            # Si Gemini déclare voir N tickets mais en retourne < 50%, c'est une
-            # troncature silencieuse de json-repair, pas un vrai résultat.
+            # Détection de troncature : primaire déclare N tickets mais retourne < 50%
             if nb_vus >= 3 and len(tickets) < nb_vus * 0.5:
                 logger.warning(
-                    f"  [Gemini Vision] Troncature probable sur {filename}: "
+                    f"  [{primary_label}] Troncature probable sur {filename}: "
                     f"nb_tickets_vus={nb_vus} mais seulement {len(tickets)} extraits. "
                     f"Retry avec prompt renforcé."
                 )
                 result = None
-                if attempt + 1 < MAX_GEMINI_RETRIES:
-                    continue  # retry avec JSON_STRICT_ADDON
-                # Dernier essai déjà épuisé → fallback Claude
+                if attempt + 1 < MAX_RETRIES_PRIMARY:
+                    continue
                 break
 
-            # Sous-extraction légère (1-2 tickets de moins) : log warning mais accepter
+            # Sous-extraction légère : log warning mais accepter
             if nb_vus > len(tickets) + 1:
                 logger.warning(
-                    f"  [Gemini Vision] Sous-extraction légère sur {filename}: "
+                    f"  [{primary_label}] Sous-extraction légère sur {filename}: "
                     f"nb_tickets_vus={nb_vus}, extraits={len(tickets)}"
                 )
             break  # Résultat cohérent — sortir de la boucle retry
 
         except json.JSONDecodeError as e:
-            logger.error(f"[Gemini Vision] JSON invalide (essai {attempt+1}/{MAX_GEMINI_RETRIES}): {e}")
+            logger.error(f"[{PRIMARY_LLM} Vision] JSON invalide (essai {attempt+1}/{MAX_RETRIES_PRIMARY}): {e}")
             result = None
-            if attempt + 1 < MAX_GEMINI_RETRIES:
-                continue  # retry avec prompt renforcé
+            if attempt + 1 < MAX_RETRIES_PRIMARY:
+                continue
         except Exception as e:
-            logger.error(f"[Gemini Vision] Erreur inattendue (essai {attempt+1}): {e}")
+            logger.error(f"[{PRIMARY_LLM} Vision] Erreur inattendue (essai {attempt+1}): {e}")
             result = None
-            break  # Erreur non-JSON (réseau, etc.) → pas de retry utile
+            break  # Erreur non-JSON → pas de retry utile
 
-    # Fallback Claude Sonnet si Gemini a échoué tous ses essais
+    # Fallback : l'autre modèle si le primaire a échoué
     if result is None:
-        logger.warning(
-            f"[Fallback] Gemini a échoué {MAX_GEMINI_RETRIES} fois sur {filename}, "
-            f"bascule sur Claude Sonnet Vision"
-        )
-        tickets = extract_tickets_claude_fallback(png_bytes, filename)
-        if not tickets:
+        if PRIMARY_LLM == 'claude':
+            logger.warning(f"[Fallback] Claude primaire a échoué, bascule sur Gemini")
+            if GEMINI_API_KEY:
+                try:
+                    raw = call_gemini_vision(png_b64, extra_prompt=JSON_STRICT_ADDON)
+                    result = clean_json_response(raw, filename)
+                    tickets = result.get('tickets', [])
+                    logger.info(f"  [Fallback Gemini] {len(tickets)} ticket(s)")
+                except Exception as e:
+                    logger.error(f"  [Fallback Gemini] Echec: {e}")
+                    result = None
+        else:
+            logger.warning(f"[Fallback] Gemini primaire a échoué, bascule sur Claude")
+            tickets = extract_tickets_claude_fallback(png_bytes, filename)
+            if tickets:
+                result = {'tickets': tickets, 'confidence_globale': 0.75}
+
+        if result is None or not result.get('tickets'):
             return {
                 "exploitable": False,
-                "raison_non_exploitable": "Extraction vision impossible (Gemini + Claude fallback échoués)",
+                "raison_non_exploitable": "Extraction vision impossible (primaire + fallback échoués)",
                 "tickets": []
             }
-        # Résultat synthétique depuis le fallback
-        result = {'tickets': tickets, 'confidence_globale': 0.75}
+        tickets = result.get('tickets', [])
 
-    # 5. Judge conditionnel Claude Sonnet 4.6 Vision
+    # 5. Judge conditionnel : l'AUTRE modèle vérifie l'extraction primaire
     if tickets and needs_judge(tickets):
-        if ANTHROPIC_API_KEY:
-            try:
-                logger.info(f"  [Judge] Déclenché ({filename})")
+        judge_used = None
+        raw_judge = None
+        try:
+            if PRIMARY_LLM == 'claude' and GEMINI_API_KEY:
+                logger.info(f"  [Judge Gemini] Déclenché sur extraction Claude ({filename})")
+                judge_used = 'gemini'
+                raw_judge = call_gemini_vision_judge(png_b64, {
+                    'tickets': tickets,
+                    'confidence_globale': result.get('confidence_globale', 0.8)
+                })
+            elif PRIMARY_LLM != 'claude' and ANTHROPIC_API_KEY:
+                logger.info(f"  [Judge Claude] Déclenché sur extraction Gemini ({filename})")
+                judge_used = 'claude'
                 raw_judge = call_claude_vision_judge(png_bytes, {
                     'tickets': tickets,
                     'confidence_globale': result.get('confidence_globale', 0.8)
                 })
+
+            if raw_judge:
                 judge_result = clean_json_response(raw_judge)
                 if 'tickets' in judge_result:
                     n_before = len(tickets)
                     tickets = judge_result['tickets']
                     modifications = judge_result.get('modifications', [])
                     logger.info(
-                        f"  [Judge] {n_before} → {len(tickets)} tickets, "
+                        f"  [Judge {judge_used}] {n_before} → {len(tickets)} tickets, "
                         f"{len(modifications)} modification(s)"
                     )
                     for mod in modifications[:5]:
                         logger.info(f"    [Judge mod] {mod}")
-            except Exception as e:
-                logger.warning(f"  [Judge] Echec (garde extraction Gemini): {e}")
-        else:
-            logger.info(f"  [Judge] Indisponible (ANTHROPIC_API_KEY absent)")
+        except Exception as e:
+            logger.warning(f"  [Judge] Echec (garde extraction primaire): {e}")
 
     # 6. Cross-check montants vs OCR brut
     if ocr_text:
