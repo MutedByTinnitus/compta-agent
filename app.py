@@ -2775,18 +2775,38 @@ def api_process():
 
     files_data = []
     for f in files:
-        if f.filename and f.filename.lower().endswith('.pdf'):
-            safe_name = sanitize_filename(f.filename)
-            pdf_bytes = f.read()
+        if not f.filename:
+            continue
+        fname_lower = f.filename.lower()
+        raw_bytes = f.read()
 
-            # Validation : verifier que c'est bien un PDF
-            if not pdf_bytes[:5] == b'%PDF-':
+        if fname_lower.endswith('.zip'):
+            # Extraire tous les PDF du ZIP
+            import zipfile
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                    for member in zf.namelist():
+                        if member.lower().endswith('.pdf') and not member.startswith('__MACOSX'):
+                            pdf_bytes = zf.read(member)
+                            if pdf_bytes[:5] != b'%PDF-':
+                                continue
+                            # Garder seulement le nom de fichier, pas le chemin dans le ZIP
+                            base_name = Path(member).name
+                            safe_name = sanitize_filename(base_name)
+                            files_data.append({'filename': safe_name, 'bytes': pdf_bytes})
+                            logger.info(f"[ZIP] Extrait : {safe_name}")
+            except zipfile.BadZipFile:
+                logger.warning(f"[ZIP] Fichier ZIP invalide : {f.filename}")
                 continue
 
-            files_data.append({'filename': safe_name, 'bytes': pdf_bytes})
+        elif fname_lower.endswith('.pdf'):
+            if raw_bytes[:5] != b'%PDF-':
+                continue
+            safe_name = sanitize_filename(f.filename)
+            files_data.append({'filename': safe_name, 'bytes': raw_bytes})
 
     if not files_data:
-        return jsonify({'error': 'Aucun fichier PDF valide'}), 400
+        return jsonify({'error': 'Aucun fichier PDF valide (PDF directs ou dans un ZIP)'}), 400
 
     # Vérifier la limite de pages avant traitement
     total_pages_estimees = 0
