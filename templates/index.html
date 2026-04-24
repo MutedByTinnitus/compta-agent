@@ -1,66 +1,100 @@
 {% extends "base.html" %}
 
-{% block title %}Kompta.ai — Agent Comptable{% endblock %}
+{% block title %}Kompta.ai — Saisie comptable{% endblock %}
 
 {% block css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/upload.css') }}">
 {% endblock %}
 
 {% block body %}
+
 <!-- Header -->
-<div class="header">
+<header class="header">
     <div class="header-logo">Kompta.ai</div>
     <div class="header-right">
         <span class="status-dot"></span>
-        <span class="status-text">Connecte</span>
-        <a href="/logout" class="logout-btn">Deconnexion</a>
+        <span class="status-text">Connecté</span>
+        <a href="/logout" class="logout-btn">Déconnexion</a>
     </div>
-</div>
+</header>
 
 <div class="main">
 
-    <!-- Upload Section -->
-    <div id="upload-section">
+    <!-- ── Upload Section ── -->
+    <section id="upload-section">
         <h1 class="page-title">Saisie comptable</h1>
-        <p class="page-desc">Deposez vos justificatifs PDF pour generer les ecritures Sage.</p>
+        <p class="page-desc">Déposez vos justificatifs pour générer les écritures Sage.</p>
 
+        <!-- Drop zone -->
         <div class="dropzone" id="dropzone">
-            <div class="dropzone-icon">&#x1F4C4;</div>
-            <div class="dropzone-text">Glissez vos fichiers ici</div>
-            <div class="dropzone-hint">PDF individuels ou archive ZIP — ou cliquez pour parcourir</div>
+            <div class="dz-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 15V3m0 0L8 7m4-4 4 4"/>
+                    <path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>
+                </svg>
+            </div>
+            <div class="dz-text">Glissez vos fichiers ici</div>
+            <div class="dz-hint">PDF, ZIP jusqu'à 50 Mo — glissez plusieurs fichiers à la fois</div>
+            <div class="dz-badges">
+                <span class="badge badge-format">PDF</span>
+                <span class="badge badge-format">ZIP</span>
+            </div>
             <input type="file" id="fileInput" multiple accept=".pdf,.zip">
         </div>
 
-        <div class="file-list" id="fileList"></div>
+        <!-- File list card -->
+        <div class="file-card card" id="fileCard" style="display:none">
+            <div class="file-card-header">
+                <span class="file-card-title">Fichiers sélectionnés (<span id="fileCount">0</span>)</span>
+                <button class="btn btn-ghost btn-sm" id="clearAllBtn">Effacer tout</button>
+            </div>
+            <div class="file-card-body" id="fileList"></div>
+        </div>
 
-        <button class="process-btn" id="processBtn" disabled>Analyser les justificatifs</button>
-    </div>
+        <!-- Analyze button -->
+        <button class="process-btn" id="processBtn" disabled>
+            Analyser les justificatifs
+        </button>
+    </section>
 
-    <!-- Loading -->
-    <div class="loading" id="loading">
-        <div class="spinner"></div>
-        <div class="loading-text">Analyse en cours...</div>
-        <div class="loading-sub" id="loadingDetail">Traitement des justificatifs par l'IA</div>
-    </div>
+    <!-- ── Processing Section ── -->
+    <section id="processing-section" style="display:none">
+        <h1 class="page-title">Analyse en cours</h1>
+        <p class="page-desc">L'IA traite vos justificatifs. Ne fermez pas cette page.</p>
 
-    <!-- Results -->
-    <div class="results" id="results">
-        <h1 class="page-title">Resultats</h1>
+        <div class="progress-card card">
+            <div class="progress-header">
+                <span class="progress-label">Traitement des justificatifs...</span>
+                <span class="progress-timer" id="elapsedTimer">⏱ 0 s</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-files" id="progressFiles"></div>
+        </div>
+    </section>
+
+    <!-- ── Loading fallback (garde compatibilité JS existant) ── -->
+    <div class="loading" id="loading" style="display:none"></div>
+
+    <!-- ── Results Section ── -->
+    <section class="results" id="results">
+        <h1 class="page-title">Résultats</h1>
         <p class="page-desc" id="resultSummary"></p>
 
         <div class="stats" id="stats"></div>
-
         <div class="downloads" id="downloads"></div>
 
         <div class="detail-section">
-            <h3>Detail des ecritures</h3>
+            <h3>Détail des écritures</h3>
             <table class="detail-table">
                 <thead>
                     <tr>
                         <th>Fichier</th>
                         <th>Statut</th>
-                        <th>Ref</th>
-                        <th>Libelle</th>
+                        <th>Réf</th>
+                        <th>Libellé</th>
                     </tr>
                 </thead>
                 <tbody id="detailBody"></tbody>
@@ -68,11 +102,12 @@
         </div>
 
         <button class="new-btn" onclick="resetAll()">Nouveau traitement</button>
-    </div>
+    </section>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>const CSRF_TOKEN = '{{ csrf_token }}';</script>
-<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/upload.js') }}"></script>
 {% endblock %}
