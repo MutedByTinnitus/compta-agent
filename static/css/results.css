@@ -1,0 +1,198 @@
+/* results.css — styles page résultats PR2b */
+
+/* ── Layout ── */
+.res-header {
+    margin-bottom: 28px;
+}
+
+.res-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-mute);
+    font-family: 'JetBrains Mono', monospace;
+    margin: 32px 0 10px;
+}
+
+/* ── Stats strip ── */
+.res-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+.res-stat-card {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    box-shadow: var(--shadow-soft);
+}
+
+.res-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-mute);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 10px;
+}
+
+.res-stat-value {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 32px;
+    font-weight: 400;
+    line-height: 1;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Fichiers ── */
+.res-files {
+    overflow: hidden;
+}
+
+.res-file-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 18px 20px;
+    transition: background 0.15s var(--ease);
+}
+
+.res-file-row + .res-file-row {
+    border-top: 1px solid var(--line-soft);
+}
+
+.res-file-row:hover {
+    background: var(--bg-2);
+}
+
+.res-file-row--dim {
+    opacity: 0.55;
+}
+
+.res-file-icon {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.res-file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.res-file-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: 3px;
+}
+
+.res-file-desc {
+    font-size: 12px;
+    color: var(--text-mute);
+}
+
+.res-dl-btn {
+    flex-shrink: 0;
+    gap: 6px;
+}
+
+.res-dl-arrow {
+    transition: transform 0.2s var(--ease);
+}
+
+.res-dl-btn:hover .res-dl-arrow {
+    transform: translateX(4px);
+}
+
+/* ── Table ── */
+.res-table-wrap {
+    overflow: hidden;
+}
+
+.detail-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.detail-table th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-mute);
+    padding: 12px 16px;
+    background: var(--bg-2);
+    font-family: 'JetBrains Mono', monospace;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.detail-row td {
+    font-size: 13px;
+    padding: 11px 16px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--text);
+    vertical-align: middle;
+}
+
+.detail-row:hover td {
+    background: var(--bg-1);
+}
+
+.mono-cell {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px !important;
+    color: var(--text-dim) !important;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Badges résultats ── */
+.res-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.04em;
+}
+
+.res-badge.ok {
+    background: var(--forest-soft);
+    color: var(--forest);
+}
+
+.res-badge.ko {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+/* ── Footer ── */
+.res-footer {
+    margin-top: 32px;
+    padding-bottom: 16px;
+}
+
+.res-back-btn {
+    gap: 8px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+    .res-stats { grid-template-columns: repeat(2, 1fr); }
+    .res-file-name { font-size: 13px; }
+}

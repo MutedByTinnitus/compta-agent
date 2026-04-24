@@ -5,6 +5,7 @@
 {% block css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/upload.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/results.css') }}">
 {% endblock %}
 
 {% block body %}
@@ -80,14 +81,23 @@
 
     <!-- ── Results Section ── -->
     <section class="results" id="results">
-        <h1 class="page-title">Résultats</h1>
-        <p class="page-desc" id="resultSummary"></p>
 
-        <div class="stats" id="stats"></div>
-        <div class="downloads" id="downloads"></div>
+        <!-- Titre + résumé -->
+        <div class="res-header">
+            <h1 class="page-title">Résultats</h1>
+            <p class="page-desc" id="resultSummary"></p>
+        </div>
 
-        <div class="detail-section">
-            <h3>Détail des écritures</h3>
+        <!-- Stats strip -->
+        <div class="res-stats" id="stats"></div>
+
+        <!-- Fichiers générés -->
+        <div class="res-section-label">Fichiers générés</div>
+        <div class="card res-files" id="downloads"></div>
+
+        <!-- Détail des écritures -->
+        <div class="res-section-label">Détail des écritures</div>
+        <div class="card res-table-wrap">
             <table class="detail-table">
                 <thead>
                     <tr>
@@ -101,7 +111,16 @@
             </table>
         </div>
 
-        <button class="new-btn" onclick="resetAll()">Nouveau traitement</button>
+        <!-- Nouveau traitement -->
+        <div class="res-footer">
+            <button class="btn btn-ghost res-back-btn" onclick="resetAll()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M19 12H5m0 0 7 7m-7-7 7-7"/>
+                </svg>
+                Nouveau traitement
+            </button>
+        </div>
+
     </section>
 
 </div>

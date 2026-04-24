@@ -198,69 +198,113 @@ processBtn.addEventListener('click', async () => {
     }
 });
 
-// ── Results (repris de app.js, inchangé) ─────────────────────────────────────
+// ── Results ───────────────────────────────────────────────────────────────────
 function showResults(data) {
     processingSection.style.display = 'none';
     resultsSection.classList.add('active');
 
     const s = data.summary;
 
+    // Résumé
     document.getElementById('resultSummary').textContent =
-        `${s.total} justificatif(s) traité(s) — ${s.exploites} exploitable(s), ${s.inexploites} inexploitable(s)`;
+        `${s.total} justificatif(s) traité(s) · ${s.exploites} exploitable(s) · ${s.inexploites} rejeté(s)`;
 
+    // Stats strip
     document.getElementById('stats').innerHTML = `
-        <div class="stat-card">
-            <div class="stat-label">Total</div>
-            <div class="stat-value">${s.total}</div>
+        <div class="res-stat-card">
+            <div class="res-stat-label">Total</div>
+            <div class="res-stat-value">${s.total}</div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Exploités</div>
-            <div class="stat-value green">${s.exploites}</div>
+        <div class="res-stat-card">
+            <div class="res-stat-label">Exploités</div>
+            <div class="res-stat-value" style="color: var(--forest)">${s.exploites}</div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Rejetés</div>
-            <div class="stat-value ${s.inexploites > 0 ? 'orange' : ''}">${s.inexploites}</div>
+        <div class="res-stat-card">
+            <div class="res-stat-label">Rejetés</div>
+            <div class="res-stat-value" style="color: ${s.inexploites > 0 ? 'var(--amber)' : 'var(--text)'}">${s.inexploites}</div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Équilibre</div>
-            <div class="stat-value ${s.equilibre ? 'green' : 'red'}">${s.equilibre ? '✓' : '✗'}</div>
+        <div class="res-stat-card">
+            <div class="res-stat-label">Équilibre</div>
+            <div class="res-stat-value" style="color: ${s.equilibre ? 'var(--forest)' : 'var(--rust)'}">${s.equilibre ? '✓' : '✗'}</div>
         </div>
     `;
 
+    // Fichiers
     const dl = data.output_files;
-    let dlHtml = '';
-    if (dl.excel)            dlHtml += downloadCard('📊', 'excel', dl.excel.name, 'Import Sage — écritures comptables');
-    if (dl.stamped_pdf)      dlHtml += downloadCard('📑', 'pdf-s', dl.stamped_pdf.name, 'Tickets visés avec tampon S');
-    if (dl.inexploitable_pdf) dlHtml += downloadCard('⚠️', 'pdf-x', dl.inexploitable_pdf.name, 'Justificatifs à corriger');
-    document.getElementById('downloads').innerHTML = dlHtml;
+    const rows = [];
+    if (dl.excel) rows.push(fileRow(
+        iconTableur(), 'var(--forest-soft)', 'var(--forest)',
+        dl.excel.name, 'Écritures comptables au format Sage', dl.excel.name
+    ));
+    if (dl.stamped_pdf) rows.push(fileRow(
+        iconDocCheck(), 'var(--accent-soft)', 'var(--accent)',
+        dl.stamped_pdf.name, 'Justificatifs tamponnés, prêts pour archivage', dl.stamped_pdf.name
+    ));
+    if (dl.inexploitable_pdf) {
+        const dim = s.inexploites === 0;
+        rows.push(fileRow(
+            iconDocAlert(), 'var(--amber-soft)', 'var(--amber)',
+            dl.inexploitable_pdf.name,
+            dim ? 'Aucun justificatif inexploitable dans ce lot' : `${s.inexploites} ticket(s) à vérifier dans ce lot`,
+            dl.inexploitable_pdf.name, dim
+        ));
+    }
+    document.getElementById('downloads').innerHTML = rows.join('');
 
+    // Tableau
     const tbody = document.getElementById('detailBody');
     tbody.innerHTML = data.results_detail.map(r => {
         const libelle = r.status === 'exploitable'
             ? (r.ecritures && r.ecritures[0] ? r.ecritures[0].libelle : '-')
             : r.raison;
-        return `<tr>
+        return `<tr class="detail-row">
             <td>${r.filename}</td>
-            <td><span class="badge ${r.status === 'exploitable' ? 'ok' : 'ko'}">${r.status === 'exploitable' ? 'OK' : 'Rejet'}</span></td>
-            <td>${r.reference || '-'}</td>
+            <td><span class="res-badge ${r.status === 'exploitable' ? 'ok' : 'ko'}">${r.status === 'exploitable' ? 'OK' : 'Rejet'}</span></td>
+            <td class="mono-cell">${r.reference || '-'}</td>
             <td>${libelle || '-'}</td>
         </tr>`;
     }).join('');
 }
 
-function downloadCard(icon, type, filename, desc) {
+function fileRow(iconSvg, bgColor, fgColor, name, desc, filename, dim = false) {
     return `
-        <div class="download-card">
-            <div class="download-info">
-                <div class="download-icon ${type}">${icon}</div>
-                <div>
-                    <div class="download-name">${filename}</div>
-                    <div class="download-desc">${desc}</div>
-                </div>
+        <div class="res-file-row${dim ? ' res-file-row--dim' : ''}">
+            <div class="res-file-icon" style="background:${bgColor}; color:${fgColor}">${iconSvg}</div>
+            <div class="res-file-info">
+                <div class="res-file-name">${name}</div>
+                <div class="res-file-desc">${desc}</div>
             </div>
-            <a href="/api/download/${filename}" class="download-btn">Télécharger</a>
+            <a href="/api/download/${filename}" class="btn btn-ghost res-dl-btn">
+                Télécharger
+                <svg class="res-dl-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12h14m0 0-7-7m7 7-7 7"/>
+                </svg>
+            </a>
         </div>
     `;
+}
+
+// SVG icons
+function iconTableur() {
+    return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <path d="M3 9h18M3 15h18M9 3v18"/>
+    </svg>`;
+}
+function iconDocCheck() {
+    return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <path d="m9 15 2 2 4-4"/>
+    </svg>`;
+}
+function iconDocAlert() {
+    return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="12" y1="18" x2="12" y2="12"/>
+        <line x1="12" y1="10" x2="12.01" y2="10"/>
+    </svg>`;
 }
 
 // ── Reset ─────────────────────────────────────────────────────────────────────
