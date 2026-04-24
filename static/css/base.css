@@ -1,21 +1,18 @@
+/* Enop — base tokens bridge (remplace les anciens tokens Apple) */
 :root {
-    --bg: #fafafa;
-    --card: #ffffff;
-    --text: #1d1d1f;
-    --text-secondary: #86868b;
-    --text-tertiary: #aeaeb2;
-    --border: #e5e5ea;
-    --border-light: #f2f2f7;
-    --accent: #0071e3;
-    --accent-hover: #0077ED;
-    --green: #34c759;
-    --orange: #ff9500;
-    --red: #ff3b30;
-    --error: #ff3b30;
-    --error-bg: #fff2f1;
-    --radius: 14px;
-    --shadow: 0 2px 12px rgba(0,0,0,0.06);
-    --shadow-lg: 0 8px 30px rgba(0,0,0,0.08);
+    /* Alias vers les tokens Enop pour compatibilité avec les CSS existants */
+    --card:           oklch(0.98 0.01 85);
+    --text-secondary: oklch(0.42 0.01 60);
+    --text-tertiary:  oklch(0.58 0.01 65);
+    --border:         oklch(0.85 0.012 80);
+    --border-light:   oklch(0.88 0.012 82 / 0.8);
+    --green:  oklch(0.55 0.14 145);
+    --orange: oklch(0.58 0.12 55);
+    --red:    oklch(0.48 0.14 30);
+    --error:  oklch(0.48 0.14 30);
+    --error-bg: oklch(0.48 0.14 30 / 0.08);
+    --shadow:    var(--shadow-soft);
+    --shadow-lg: var(--shadow-lift);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }

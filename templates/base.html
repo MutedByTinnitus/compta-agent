@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Kompta.ai{% endblock %}</title>
     <meta name="robots" content="noindex, nofollow">
+    <!-- Polices éditoriales Enop -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Tailwind CDN (utilitaires) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Design tokens Enop -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/enop-tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
     {% block css %}{% endblock %}
 </head>
