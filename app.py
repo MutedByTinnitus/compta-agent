@@ -1059,7 +1059,51 @@ def extract_total_cb(ocr_text):
     return None
 
 
-def filter_tickets_fiables(tickets, ocr_text):
+PEAGE_KEYWORDS = ["vinci", "sanef", "asf", "aprr", "cofiroute", "escota", "atmb"]
+MOIS_MAP = {
+    "janvier": 1, "fevrier": 2, "février": 2, "mars": 3, "avril": 4,
+    "mai": 5, "juin": 6, "juillet": 7, "aout": 8, "août": 8,
+    "septembre": 9, "octobre": 10, "novembre": 11, "decembre": 12, "décembre": 12,
+}
+
+
+def _infer_date_from_context(ticket, page_filename, all_tickets_same_page):
+    """Infère une date pour un ticket péage sans date.
+    Stratégie 1 : médiane des dates valides des autres tickets de la page (≥2 requis).
+    Stratégie 2 : mois+année extraits du nom de fichier → 15/MM/AAAA.
+    Retourne une str JJ/MM/AAAA ou None."""
+    # 1. Médiane des autres tickets
+    dates_voisines = []
+    for t in all_tickets_same_page:
+        if t is ticket:
+            continue
+        d = str(t.get('date', ''))
+        if re.match(r'^\d{2}/\d{2}/\d{4}$', d):
+            try:
+                dates_voisines.append(datetime.strptime(d, '%d/%m/%Y'))
+            except ValueError:
+                pass
+    if len(dates_voisines) >= 2:
+        dates_voisines.sort()
+        mediane = dates_voisines[len(dates_voisines) // 2]
+        return mediane.strftime('%d/%m/%Y')
+
+    # 2. Mois + année depuis le nom de fichier
+    fname_lower = page_filename.lower()
+    annee_match = re.search(r'(20\d{2})', fname_lower)
+    annee = int(annee_match.group(1)) if annee_match else None
+    mois = None
+    for nom, num in MOIS_MAP.items():
+        if nom in fname_lower:
+            mois = num
+            break
+    if annee and mois:
+        return f'15/{mois:02d}/{annee}'
+
+    return None
+
+
+def filter_tickets_fiables(tickets, ocr_text, page_filename=''):
     """Filtre les tickets avant calcul comptable.
     Retourne (tickets_ok, tickets_rejetes, refs_a_verifier).
     tickets_rejetes = liste de dicts ticket + 'raison_rejet'.
@@ -1084,7 +1128,28 @@ def filter_tickets_fiables(tickets, ocr_text):
 
         # Critere 2 : date manquante ou mauvais format
         elif not re.match(r'^\d{2}/\d{2}/\d{4}$', str(t.get('date', ''))):
-            raison = "Date manquante ou illisible"
+            # Récupération conditionnelle pour les péages (VINCI, Sanef, APRR, etc.)
+            # qui n'impriment pas toujours la date de façon lisible
+            fournisseur_lower = str(t.get('fournisseur', '')).lower()
+            is_peage = any(kw in fournisseur_lower for kw in PEAGE_KEYWORDS)
+            if is_peage and ttc > 0:
+                date_fallback = _infer_date_from_context(t, page_filename, tickets)
+                if date_fallback:
+                    t = dict(t)
+                    t['date'] = date_fallback
+                    t['confidence'] = min(float(t.get('confidence', 0.7) or 0.7), 0.6)
+                    existing = t.get('raison_rejet', '') or ''
+                    note = f"Date inférée du contexte ({date_fallback})"
+                    t['raison_rejet'] = (existing + " | " + note).strip(' |') if existing else note
+                    logger.info(
+                        f"  [Filtre] Péage sans date récupéré : "
+                        f"{t.get('fournisseur','?')} {ttc}€ → date inférée {date_fallback} (conf 0.6)"
+                    )
+                    # Pas de raison de rejet — on continue avec le ticket corrigé
+                else:
+                    raison = "Date manquante ou illisible"
+            else:
+                raison = "Date manquante ou illisible"
 
         # Critere 2b : dépense potentiellement personnelle → noter mais ne pas rejeter
         if raison is None:
@@ -1709,14 +1774,38 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
             # Détection de troncature : primaire déclare N tickets mais retourne < 50%
             if nb_vus >= 3 and len(tickets) < nb_vus * 0.5:
                 logger.warning(
-                    f"  [{primary_label}] Troncature probable sur {filename}: "
-                    f"nb_tickets_vus={nb_vus} mais seulement {len(tickets)} extraits. "
-                    f"Retry avec prompt renforcé."
+                    f"  [{primary_label}] Troncature détectée sur {filename}: "
+                    f"{len(tickets)}/{nb_vus} tickets extraits. Bascule directe sur Claude."
                 )
-                result = None
-                if attempt + 1 < MAX_RETRIES_PRIMARY:
-                    continue
-                break
+                # Skip retry Gemini (rééchoue souvent) — aller directement sur Claude
+                if PRIMARY_LLM != 'claude' and ANTHROPIC_API_KEY:
+                    try:
+                        raw_claude = call_claude_vision_primary(png_bytes)
+                        result_claude = clean_json_response(raw_claude, filename)
+                        tickets_claude = result_claude.get('tickets', [])
+                        if len(tickets_claude) >= len(tickets):
+                            logger.info(
+                                f"  [Fallback Claude troncature] {len(tickets_claude)} ticket(s) "
+                                f"récupérés (vs {len(tickets)} avec Gemini)"
+                            )
+                            result = result_claude
+                            tickets = tickets_claude
+                            break  # Résultat Claude accepté, sortir de la boucle
+                        else:
+                            logger.warning(
+                                f"  [Fallback Claude troncature] Pas mieux "
+                                f"({len(tickets_claude)} vs {len(tickets)}), garde Gemini"
+                            )
+                            # Garde le résultat Gemini partiel
+                            break
+                    except Exception as e:
+                        logger.warning(f"  [Fallback Claude troncature] Echec ({e}), garde Gemini")
+                        break
+                else:
+                    result = None
+                    if attempt + 1 < MAX_RETRIES_PRIMARY:
+                        continue
+                    break
 
             # Sous-extraction légère : log warning mais accepter
             if nb_vus > len(tickets) + 1:
@@ -2446,7 +2535,7 @@ def process_tickets(files_data):
 
         ocr_text = result.get('_ocr_text', '')
         logger.info(f"  [Filtre] len(ocr_text)={len(ocr_text)} chars")
-        tickets_ok, tickets_rejetes, refs_a_verifier = filter_tickets_fiables(tickets_bruts, ocr_text)
+        tickets_ok, tickets_rejetes, refs_a_verifier = filter_tickets_fiables(tickets_bruts, ocr_text, page_filename=filename)
         logger.info(
             f"  [Filtre] {len(tickets_ok)} ok, {len(tickets_rejetes)} rejetes, "
             f"{len(refs_a_verifier)} à vérifier sur {len(tickets_bruts)} extraits"
