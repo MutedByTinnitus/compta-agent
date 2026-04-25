@@ -1,5 +1,5 @@
 /* upload.js — Kompta.ai dark dashboard
-   Handles tab navigation + upload/processing/results flow */
+   Progression calée sur les phases réelles du backend */
 
 // ── Tab navigation ─────────────────────────────────────────────────────────────
 function switchTab(tabId) {
@@ -108,76 +108,157 @@ function renderFiles() {
 
 clearAllBtn.addEventListener('click', clearAll);
 
-// ── Step animation ─────────────────────────────────────────────────────────────
-const STEPS = ['step-upload', 'step-extract', 'step-validate', 'step-export'];
+// ── Progression réelle calée sur le backend ────────────────────────────────────
+/*
+  Backend phases (durées typiques) :
+  1. upload / split      :  2-8s    (5% du temps)
+  2. render PNG 300dpi   :  3-10s   (10% du temps)
+  3. AI Vision (×4 par)  : 15-120s  (65% du temps — le plus long)
+  4. filtre + dedup      :  2-5s    (10% du temps)
+  5. export Excel+PDF    :  3-10s   (10% du temps)
 
-function setStep(idx) {
-    STEPS.forEach((id, i) => {
-        const row = document.getElementById(id);
-        const dot = row.querySelector('.dk-step-dot');
-        row.className = 'dk-step';
-        dot.className = 'dk-step-dot';
-        if (i < idx) {
-            row.classList.add('done');
-            dot.classList.add('done');
-            dot.textContent = '✓';
-        } else if (i === idx) {
-            row.classList.add('active');
-            dot.classList.add('active');
-            dot.textContent = '◉';
-        } else {
-            row.classList.add('waiting');
-            dot.classList.add('waiting');
-            dot.textContent = '○';
+  Estimation de la durée totale selon le nombre de fichiers.
+  On estime ~20s/page pour l'IA (median observé avec cache OFF).
+*/
+
+const STEP_IDS = ['step-upload', 'step-render', 'step-ai', 'step-filter', 'step-export'];
+
+// % de progression cumulé à la fin de chaque étape (0-100)
+const STEP_THRESHOLDS = [8, 18, 82, 92, 100];
+
+// Labels détail dynamiques pendant l'étape active
+const STEP_DETAILS_ACTIVE = [
+    'Validation PDF, extraction des pages…',
+    'Conversion PDF → PNG 300 DPI…',
+    'Modèle IA en lecture…',
+    'Contrôle qualité, détection des doublons…',
+    'Génération Excel Sage, assemblage PDF…',
+];
+
+// Labels après complétion
+const STEP_DETAILS_DONE = [
+    null, // garder le défaut HTML
+    null,
+    null,
+    null,
+    null,
+];
+
+let stepStartTimes = [null, null, null, null, null];
+let currentStep    = -1;
+let estimatedTotal = 60; // secondes, recalculé au démarrage
+
+function estimateDuration(fileCount) {
+    // ~20s par fichier pour l'IA + ~15s overhead fixe
+    return Math.max(30, fileCount * 20 + 15);
+}
+
+function setStepState(idx, state /* 'waiting'|'active'|'done' */) {
+    const row  = document.getElementById(STEP_IDS[idx]);
+    if (!row) return;
+    const icon = row.querySelector('.dk-step-icon');
+
+    row.className = 'dk-step ' + state;
+    icon.className = 'dk-step-icon ' + state;
+
+    if (state === 'active') {
+        const detEl = row.querySelector('.dk-step-detail');
+        if (detEl) detEl.textContent = STEP_DETAILS_ACTIVE[idx];
+        stepStartTimes[idx] = Date.now();
+    }
+
+    if (state === 'done') {
+        const timeEl = document.getElementById('time-' + STEP_IDS[idx].replace('step-', ''));
+        if (timeEl && stepStartTimes[idx]) {
+            const dur = ((Date.now() - stepStartTimes[idx]) / 1000).toFixed(0);
+            timeEl.textContent = dur + ' s';
         }
-    });
+    }
+}
+
+function advanceToStep(idx) {
+    if (idx === currentStep) return;
+
+    // Marquer les précédents comme done
+    for (let i = 0; i < idx; i++) {
+        if (i !== currentStep) setStepState(i, 'done');
+    }
+
+    // Terminer le step courant
+    if (currentStep >= 0 && currentStep < idx) {
+        setStepState(currentStep, 'done');
+    }
+
+    // Activer le nouveau
+    setStepState(idx, 'active');
+    currentStep = idx;
+}
+
+function initSteps() {
+    currentStep = -1;
+    stepStartTimes = [null, null, null, null, null];
+    STEP_IDS.forEach((_, i) => setStepState(i, 'waiting'));
+}
+
+function allStepsDone() {
+    STEP_IDS.forEach((_, i) => setStepState(i, 'done'));
+    currentStep = STEP_IDS.length;
 }
 
 // ── Progress helpers ───────────────────────────────────────────────────────────
-function startFakeProgress() {
-    startTime = Date.now();
-    setStep(0);
+function startProgress() {
+    startTime     = Date.now();
+    estimatedTotal = estimateDuration(selectedFiles.length);
+    initSteps();
 
+    // Tick
     timerInterval = setInterval(() => {
-        const s = Math.floor((Date.now() - startTime) / 1000);
-        const m = Math.floor(s / 60);
-        const ss = s % 60;
-        elapsedTimer.textContent = m > 0 ? `⏱ ${m} min ${ss} s` : `⏱ ${ss} s`;
-
-        // Advance step based on elapsed time
-        if (s >= 5  && s < 30)  setStep(1);
-        if (s >= 30 && s < 90)  setStep(2);
-        if (s >= 90)             setStep(3);
-    }, 1000);
-
-    let pct = 0;
-    progressBar.style.width = '0%';
-    progressInterval = setInterval(() => {
         const elapsed = (Date.now() - startTime) / 1000;
-        pct = 90 * (1 - Math.exp(-elapsed / 55));
-        progressBar.style.width = Math.min(pct, 90) + '%';
+        const m  = Math.floor(elapsed / 60);
+        const ss = Math.floor(elapsed % 60).toString().padStart(2, '0');
+        elapsedTimer.textContent = m > 0 ? `${m}:${ss}` : `${Math.floor(elapsed)} s`;
+
+        // Avancement proportionnel des étapes selon le temps écoulé
+        const pct = Math.min((elapsed / estimatedTotal) * 100, 99);
+
+        // Déterminer quelle étape est en cours selon le % global
+        let targetStep = 0;
+        for (let i = 0; i < STEP_THRESHOLDS.length; i++) {
+            if (pct >= STEP_THRESHOLDS[i]) targetStep = i + 1;
+            else break;
+        }
+        // Ne pas dépasser la dernière (on finit manuellement)
+        targetStep = Math.min(targetStep, STEP_IDS.length - 1);
+        advanceToStep(targetStep);
+
+        // Barre : avance jusqu'à 95% max tant que pas terminé
+        progressBar.style.width = Math.min(pct, 95) + '%';
     }, 500);
 }
 
-function stopFakeProgress(success) {
+function stopProgress(success) {
     clearInterval(timerInterval);
-    clearInterval(progressInterval);
     timerInterval = null;
-    progressInterval = null;
 
     if (success) {
+        allStepsDone();
         progressBar.style.width = '100%';
         progressBar.classList.add('done');
-        setStep(STEPS.length); // all done
     }
 }
 
 function showProcessing() {
-    progressFiles.textContent = selectedFiles.map(f => f.name).join(' · ');
-    uploadState.style.display = 'none';
+    const names = selectedFiles.map(f => f.name).join(' · ');
+    progressFiles.textContent = names;
+    progressBar.style.width = '0%';
+    progressBar.classList.remove('done');
+    elapsedTimer.textContent = '0 s';
+
+    uploadState.style.display     = 'none';
     processingState.style.display = 'block';
-    resultsState.style.display = 'none';
-    startFakeProgress();
+    resultsState.style.display    = 'none';
+
+    startProgress();
 }
 
 // ── Process ────────────────────────────────────────────────────────────────────
@@ -202,9 +283,10 @@ processBtn.addEventListener('click', async () => {
         }
 
         const data = await resp.json();
-        stopFakeProgress(true);
+        stopProgress(true);
 
-        await new Promise(r => setTimeout(r, 400));
+        // Laisser la barre à 100% une demi-seconde avant le switch
+        await new Promise(r => setTimeout(r, 500));
 
         if (data.error) {
             alert('Erreur : ' + data.error);
@@ -215,7 +297,7 @@ processBtn.addEventListener('click', async () => {
         showResults(data);
 
     } catch (err) {
-        stopFakeProgress(false);
+        stopProgress(false);
         alert('Erreur de connexion : ' + err.message);
         resetAll();
     }
@@ -224,7 +306,7 @@ processBtn.addEventListener('click', async () => {
 // ── Results ────────────────────────────────────────────────────────────────────
 function showResults(data) {
     processingState.style.display = 'none';
-    resultsState.style.display = 'block';
+    resultsState.style.display    = 'block';
 
     const s = data.summary;
 
@@ -259,7 +341,7 @@ function showResults(data) {
         dl.excel.name, 'Écritures comptables au format Sage', dl.excel.name
     ));
     if (dl.stamped_pdf) rows.push(dlRow(
-        iconDocCheck(), 'rgba(61,217,168,0.08)', 'var(--dk-text-dim)',
+        iconDocCheck(), 'rgba(61,217,168,0.06)', 'var(--dk-text-dim)',
         dl.stamped_pdf.name, 'Justificatifs tamponnés, prêts pour archivage', dl.stamped_pdf.name
     ));
     if (dl.inexploitable_pdf) {
@@ -267,7 +349,7 @@ function showResults(data) {
         rows.push(dlRow(
             iconDocAlert(), 'var(--dk-amber-soft)', 'var(--dk-amber)',
             dl.inexploitable_pdf.name,
-            dim ? 'Aucun justificatif inexploitable dans ce lot' : `${s.inexploites} ticket(s) à vérifier dans ce lot`,
+            dim ? 'Aucun justificatif inexploitable dans ce lot' : `${s.inexploites} ticket(s) à vérifier`,
             dl.inexploitable_pdf.name, dim
         ));
     }
@@ -330,16 +412,16 @@ function iconDocAlert() {
 
 // ── Reset ──────────────────────────────────────────────────────────────────────
 function resetAll() {
-    stopFakeProgress(false);
+    stopProgress(false);
     selectedFiles = [];
     renderFiles();
     progressBar.style.width = '0%';
     progressBar.classList.remove('done');
-    elapsedTimer.textContent = '⏱ 0 s';
-    progressFiles.textContent = '';
-    setStep(0);
+    elapsedTimer.textContent = '0 s';
+    progressFiles.textContent = '—';
+    initSteps();
 
-    uploadState.style.display = 'block';
+    uploadState.style.display     = 'block';
     processingState.style.display = 'none';
-    resultsState.style.display = 'none';
+    resultsState.style.display    = 'none';
 }

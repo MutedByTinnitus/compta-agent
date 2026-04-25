@@ -41,13 +41,25 @@
 }
 
 /* ═══════════════════════════════════════════════════════
+   FONT ALIASES — endex.ai style
+   SeasonSerif → Cormorant Garamond
+   Aeonik      → DM Sans
+   IBM Plex Mono → IBM Plex Mono
+   ═══════════════════════════════════════════════════════ */
+:root {
+    --font-heading: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+    --font-body:    'DM Sans', -apple-system, sans-serif;
+    --font-mono:    'IBM Plex Mono', 'JetBrains Mono', monospace;
+}
+
+/* ═══════════════════════════════════════════════════════
    RESET DARK
    ═══════════════════════════════════════════════════════ */
 .dk body,
 body.dark-mode {
     background: var(--dk-bg);
     color: var(--dk-text);
-    font-family: 'Inter', -apple-system, sans-serif;
+    font-family: var(--font-body);
     -webkit-font-smoothing: antialiased;
     margin: 0;
     min-height: 100vh;
@@ -84,15 +96,15 @@ body.dark-mode {
 }
 
 .dk-logo-name {
-    font-family: 'Instrument Serif', Georgia, serif;
-    font-size: 20px;
+    font-family: var(--font-heading);
+    font-size: 22px;
     font-weight: 400;
     color: var(--dk-text);
     letter-spacing: -0.2px;
 }
 
 .dk-logo-tag {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     color: var(--dk-green);
     text-transform: uppercase;
@@ -102,7 +114,7 @@ body.dark-mode {
 
 /* Nav label */
 .dk-nav-label {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     color: var(--dk-green);
     text-transform: uppercase;
@@ -129,7 +141,7 @@ body.dark-mode {
     background: transparent;
     color: var(--dk-text-dim);
     font-size: 13.5px;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-body);
     font-weight: 400;
     cursor: pointer;
     text-align: left;
@@ -205,7 +217,7 @@ body.dark-mode {
    TYPOGRAPHY HELPERS
    ═══════════════════════════════════════════════════════ */
 .dk-formula {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     color: var(--dk-green);
     text-transform: uppercase;
@@ -214,16 +226,17 @@ body.dark-mode {
 }
 
 .dk-h1 {
-    font-family: 'Instrument Serif', Georgia, serif;
-    font-size: 36px;
+    font-family: var(--font-heading);
+    font-size: 40px;
     font-weight: 400;
     color: var(--dk-text);
     letter-spacing: -0.3px;
     margin: 0 0 6px;
-    line-height: 1.1;
+    line-height: 1.08;
 }
 
 .dk-subtitle {
+    font-family: var(--font-body);
     font-size: 14px;
     color: var(--dk-text-dim);
     margin: 0 0 32px;
@@ -306,7 +319,7 @@ body.dark-mode {
 }
 
 .dk-badge-format {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.08em;
@@ -345,7 +358,7 @@ body.dark-mode {
 }
 
 .dk-file-card-title {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     color: var(--dk-text-mute);
     letter-spacing: 0.04em;
@@ -356,7 +369,7 @@ body.dark-mode {
     border: 1px solid var(--dk-border);
     color: var(--dk-text-mute);
     font-size: 11px;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-body);
     padding: 3px 10px;
     border-radius: 999px;
     cursor: pointer;
@@ -396,7 +409,7 @@ body.dark-mode {
 }
 
 .dk-file-size {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     color: var(--dk-text-mute);
     flex-shrink: 0;
@@ -433,7 +446,7 @@ body.dark-mode {
     border-radius: 999px;
     font-size: 14px;
     font-weight: 600;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-body);
     cursor: pointer;
     transition: all 0.2s var(--dk-ease);
     letter-spacing: 0.01em;
@@ -461,7 +474,7 @@ body.dark-mode {
     border: 1px solid var(--dk-border-dot);
     border-radius: 999px;
     font-size: 13px;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-body);
     cursor: pointer;
     transition: all 0.15s var(--dk-ease);
     text-decoration: none;
@@ -474,15 +487,51 @@ body.dark-mode {
 }
 
 /* ═══════════════════════════════════════════════════════
-   PROCESSING — étapes
+   PROCESSING — étapes calées sur le backend réel
    ═══════════════════════════════════════════════════════ */
 .dk-processing-card {
     background: var(--dk-bg-card);
     border: 1px solid var(--dk-border);
     border-radius: 12px;
-    padding: 28px;
+    padding: 32px;
 }
 
+/* Header avec titre + timer */
+.dk-processing-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 28px;
+}
+
+.dk-processing-title {
+    font-family: var(--font-heading);
+    font-size: 22px;
+    font-weight: 400;
+    color: var(--dk-text);
+    line-height: 1.2;
+}
+
+.dk-processing-subtitle {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--dk-text-mute);
+    letter-spacing: 0.06em;
+    margin-top: 4px;
+}
+
+.dk-timer {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--dk-green);
+    flex-shrink: 0;
+    padding: 4px 10px;
+    border: 1px solid var(--dk-green-line);
+    border-radius: 999px;
+    letter-spacing: 0.04em;
+}
+
+/* Steps list */
 .dk-steps {
     display: flex;
     flex-direction: column;
@@ -493,59 +542,118 @@ body.dark-mode {
 .dk-step {
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 12px 0;
+    gap: 16px;
+    padding: 13px 0;
     border-bottom: 1px solid var(--dk-border);
+    transition: all 0.3s var(--dk-ease);
 }
 
 .dk-step:last-child { border-bottom: none; }
 
-.dk-step-dot {
-    width: 22px;
-    height: 22px;
+/* Icône d'état */
+.dk-step-icon {
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
-    transition: all 0.3s;
+    transition: all 0.35s var(--dk-ease);
 }
 
-.dk-step-dot.done {
-    background: var(--dk-green-soft);
-    border: 1.5px solid var(--dk-green);
-    color: var(--dk-green);
-}
-
-.dk-step-dot.active {
-    background: var(--dk-green-soft);
-    border: 1.5px solid var(--dk-green);
-    color: var(--dk-green);
-    animation: dk-pulse 1.4s ease infinite;
-}
-
-.dk-step-dot.waiting {
+.dk-step-icon.waiting {
     background: var(--dk-bg-3);
-    border: 1.5px solid var(--dk-border);
-    color: var(--dk-text-mute);
+    border: 1.5px solid rgba(255,255,255,0.06);
+}
+
+.dk-step-icon.active {
+    background: var(--dk-green-soft);
+    border: 1.5px solid var(--dk-green);
+    animation: dk-pulse 1.6s ease infinite;
+}
+
+.dk-step-icon.done {
+    background: var(--dk-green-soft);
+    border: 1.5px solid var(--dk-green);
 }
 
 @keyframes dk-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(61,217,168,0); }
-    50%       { box-shadow: 0 0 0 5px rgba(61,217,168,0.12); }
+    60%       { box-shadow: 0 0 0 6px rgba(61,217,168,0.1); }
 }
+
+/* Spinner SVG */
+.dk-step-spinner {
+    display: none;
+    animation: dk-spin 1s linear infinite;
+}
+
+.dk-step-icon.active .dk-step-spinner { display: block; }
+.dk-step-icon.active .dk-step-check   { display: none; }
+.dk-step-icon.active .dk-step-wait    { display: none; }
+
+.dk-step-check  { display: none; }
+.dk-step-wait   { display: block; }
+
+.dk-step-icon.done .dk-step-check   { display: block; }
+.dk-step-icon.done .dk-step-spinner { display: none; }
+.dk-step-icon.done .dk-step-wait    { display: none; }
+
+@keyframes dk-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* Label + détail */
+.dk-step-body { flex: 1; min-width: 0; }
 
 .dk-step-label {
+    font-family: var(--font-body);
     font-size: 13.5px;
-    color: var(--dk-text-dim);
+    font-weight: 500;
+    color: var(--dk-text-mute);
+    transition: color 0.3s;
+    line-height: 1.3;
 }
 
-.dk-step.done .dk-step-label  { color: var(--dk-text); }
-.dk-step.active .dk-step-label { color: var(--dk-green); }
+.dk-step-detail {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--dk-text-mute);
+    margin-top: 2px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* États du step */
+.dk-step.active .dk-step-label  { color: var(--dk-text); }
+.dk-step.done   .dk-step-label  { color: var(--dk-text-dim); }
+.dk-step.active .dk-step-detail { opacity: 1; color: var(--dk-green); }
+.dk-step.done   .dk-step-detail { opacity: 1; }
+
+/* Durée à droite */
+.dk-step-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--dk-text-mute);
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.dk-step.done .dk-step-time { opacity: 1; }
+
+/* Barre de progression */
+.dk-progress-wrap {
+    margin-top: 4px;
+}
 
 .dk-progress-track {
-    height: 3px;
+    height: 2px;
     background: var(--dk-bg-3);
     border-radius: 999px;
     overflow: hidden;
@@ -556,34 +664,24 @@ body.dark-mode {
     background: var(--dk-green);
     border-radius: 999px;
     width: 0%;
-    transition: width 0.6s var(--dk-ease);
+    transition: width 0.8s var(--dk-ease);
 }
 
-.dk-progress-bar.done { background: var(--dk-green); }
-
-.dk-processing-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: 16px;
+.dk-progress-bar.done {
+    background: var(--dk-green);
+    transition: width 0.3s ease;
 }
 
+/* Files en bas */
 .dk-processing-files {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     color: var(--dk-text-mute);
+    margin-top: 14px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
-    margin-right: 12px;
-}
-
-.dk-timer {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: var(--dk-text-mute);
-    flex-shrink: 0;
+    letter-spacing: 0.02em;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -604,7 +702,7 @@ body.dark-mode {
 }
 
 .dk-stat-label {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.12em;
@@ -613,7 +711,7 @@ body.dark-mode {
 }
 
 .dk-stat-value {
-    font-family: 'Instrument Serif', Georgia, serif;
+    font-family: var(--font-heading);
     font-size: 32px;
     font-weight: 400;
     color: var(--dk-text);
@@ -622,7 +720,7 @@ body.dark-mode {
 
 /* Section label */
 .dk-section-label {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.12em;
@@ -691,7 +789,7 @@ body.dark-mode {
     border: 1px solid var(--dk-border-dot);
     border-radius: 999px;
     font-size: 12px;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-body);
     text-decoration: none;
     transition: all 0.15s var(--dk-ease);
     flex-shrink: 0;
@@ -728,7 +826,7 @@ body.dark-mode {
 
 .dk-table th {
     text-align: left;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.1em;
@@ -752,7 +850,7 @@ body.dark-mode {
     color: var(--dk-text);
 }
 
-.dk-mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.dk-mono { font-family: var(--font-mono); font-size: 11px; }
 
 .dk-badge-ok {
     display: inline-flex;
@@ -761,7 +859,7 @@ body.dark-mode {
     padding: 2px 9px;
     border-radius: 999px;
     font-size: 11px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     background: rgba(61,217,168,0.1);
     color: var(--dk-green);
     border: 1px solid rgba(61,217,168,0.2);
@@ -774,7 +872,7 @@ body.dark-mode {
     padding: 2px 9px;
     border-radius: 999px;
     font-size: 11px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     background: var(--dk-amber-soft);
     color: var(--dk-amber);
     border: 1px solid rgba(212,169,74,0.2);
@@ -782,7 +880,7 @@ body.dark-mode {
 
 /* Récap comptable */
 .dk-recap {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     color: var(--dk-green);
     margin-top: 14px;
@@ -801,7 +899,7 @@ body.dark-mode {
     border: 1px solid var(--dk-border);
     border-radius: 999px;
     font-size: 13px;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-body);
     cursor: pointer;
     transition: all 0.15s;
     text-decoration: none;

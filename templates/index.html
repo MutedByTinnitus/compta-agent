@@ -108,39 +108,92 @@
             <!-- Processing state -->
             <div id="dk-processing-state" style="display:none">
                 <div class="dk-formula">=PROCESSING()</div>
-                <h1 class="dk-h1">Analyse en cours</h1>
-                <p class="dk-subtitle">L'IA traite vos justificatifs. Ne fermez pas cette page.</p>
 
                 <div class="dk-processing-card">
+                    <!-- Header -->
+                    <div class="dk-processing-header">
+                        <div>
+                            <div class="dk-processing-title">Analyse en cours</div>
+                            <div class="dk-processing-subtitle" id="progressFiles">—</div>
+                        </div>
+                        <div class="dk-timer" id="elapsedTimer">0 s</div>
+                    </div>
+
                     <!-- Steps -->
                     <div class="dk-steps" id="dkSteps">
-                        <div class="dk-step active" id="step-upload">
-                            <div class="dk-step-dot active">◉</div>
-                            <span class="dk-step-label">Chargement des fichiers</span>
+
+                        <div class="dk-step waiting" id="step-upload">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Chargement &amp; découpage</div>
+                                <div class="dk-step-detail" id="detail-upload">Validation des PDF, extraction des pages</div>
+                            </div>
+                            <div class="dk-step-time" id="time-upload"></div>
                         </div>
-                        <div class="dk-step waiting" id="step-extract">
-                            <div class="dk-step-dot waiting">○</div>
-                            <span class="dk-step-label">Extraction des données</span>
+
+                        <div class="dk-step waiting" id="step-render">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Rendu haute résolution</div>
+                                <div class="dk-step-detail" id="detail-render">Conversion PDF → PNG 300 DPI</div>
+                            </div>
+                            <div class="dk-step-time" id="time-render"></div>
                         </div>
-                        <div class="dk-step waiting" id="step-validate">
-                            <div class="dk-step-dot waiting">○</div>
-                            <span class="dk-step-label">Validation comptable</span>
+
+                        <div class="dk-step waiting" id="step-ai">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Extraction IA Vision</div>
+                                <div class="dk-step-detail" id="detail-ai">Lecture des tickets par le modèle</div>
+                            </div>
+                            <div class="dk-step-time" id="time-ai"></div>
                         </div>
+
+                        <div class="dk-step waiting" id="step-filter">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Filtrage &amp; dédoublonnage</div>
+                                <div class="dk-step-detail" id="detail-filter">Validation qualité, détection des doublons</div>
+                            </div>
+                            <div class="dk-step-time" id="time-filter"></div>
+                        </div>
+
                         <div class="dk-step waiting" id="step-export">
-                            <div class="dk-step-dot waiting">○</div>
-                            <span class="dk-step-label">Génération des fichiers</span>
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Génération Sage &amp; PDF</div>
+                                <div class="dk-step-detail" id="detail-export">Écritures comptables, fichiers de sortie</div>
+                            </div>
+                            <div class="dk-step-time" id="time-export"></div>
                         </div>
+
                     </div>
 
                     <!-- Progress bar -->
-                    <div class="dk-progress-track">
-                        <div class="dk-progress-bar" id="progressBar"></div>
-                    </div>
-
-                    <!-- Footer -->
-                    <div class="dk-processing-footer">
-                        <div class="dk-processing-files" id="progressFiles"></div>
-                        <div class="dk-timer" id="elapsedTimer">⏱ 0 s</div>
+                    <div class="dk-progress-wrap">
+                        <div class="dk-progress-track">
+                            <div class="dk-progress-bar" id="progressBar"></div>
+                        </div>
                     </div>
                 </div>
             </div>
