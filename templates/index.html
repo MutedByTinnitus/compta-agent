@@ -1,128 +1,235 @@
 {% extends "base.html" %}
 
-{% block title %}Kompta.ai — Saisie comptable{% endblock %}
+{% block title %}Kompta.ai — Dashboard{% endblock %}
 
 {% block css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/upload.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/results.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard-dark.css') }}">
+<style>
+    /* Neutralise le fond clair du body pour ce template */
+    html, body {
+        background: #0a1410 !important;
+        margin: 0;
+        padding: 0;
+    }
+</style>
 {% endblock %}
 
 {% block body %}
+<div class="dk-shell">
 
-<!-- Header -->
-<header class="header">
-    <div class="header-logo">Kompta.ai</div>
-    <div class="header-right">
-        <span class="status-dot"></span>
-        <span class="status-text">Connecté</span>
-        <a href="/logout" class="logout-btn">Déconnexion</a>
-    </div>
-</header>
-
-<div class="main">
-
-    <!-- ── Upload Section ── -->
-    <section id="upload-section">
-        <h1 class="page-title">Saisie comptable</h1>
-        <p class="page-desc">Déposez vos justificatifs pour générer les écritures Sage.</p>
-
-        <!-- Drop zone -->
-        <div class="dropzone" id="dropzone">
-            <div class="dz-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 15V3m0 0L8 7m4-4 4 4"/>
-                    <path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>
-                </svg>
-            </div>
-            <div class="dz-text">Glissez vos fichiers ici</div>
-            <div class="dz-hint">PDF, ZIP jusqu'à 50 Mo — glissez plusieurs fichiers à la fois</div>
-            <div class="dz-badges">
-                <span class="badge badge-format">PDF</span>
-                <span class="badge badge-format">ZIP</span>
-            </div>
-            <input type="file" id="fileInput" multiple accept=".pdf,.zip">
+    <!-- ══ SIDEBAR ══════════════════════════════════════════ -->
+    <aside class="dk-sidebar">
+        <!-- Logo -->
+        <div class="dk-sidebar-logo">
+            <div class="dk-logo-name">Kompta.ai</div>
+            <div class="dk-logo-tag">Agent comptable</div>
         </div>
 
-        <!-- File list card -->
-        <div class="file-card card" id="fileCard" style="display:none">
-            <div class="file-card-header">
-                <span class="file-card-title">Fichiers sélectionnés (<span id="fileCount">0</span>)</span>
-                <button class="btn btn-ghost btn-sm" id="clearAllBtn">Effacer tout</button>
-            </div>
-            <div class="file-card-body" id="fileList"></div>
-        </div>
+        <!-- Nav label -->
+        <div class="dk-nav-label">Navigation</div>
 
-        <!-- Analyze button -->
-        <button class="process-btn" id="processBtn" disabled>
-            Analyser les justificatifs
-        </button>
-    </section>
-
-    <!-- ── Processing Section ── -->
-    <section id="processing-section" style="display:none">
-        <h1 class="page-title">Analyse en cours</h1>
-        <p class="page-desc">L'IA traite vos justificatifs. Ne fermez pas cette page.</p>
-
-        <div class="progress-card card">
-            <div class="progress-header">
-                <span class="progress-label">Traitement des justificatifs...</span>
-                <span class="progress-timer" id="elapsedTimer">⏱ 0 s</span>
-            </div>
-            <div class="progress-track">
-                <div class="progress-bar" id="progressBar"></div>
-            </div>
-            <div class="progress-files" id="progressFiles"></div>
-        </div>
-    </section>
-
-    <!-- ── Loading fallback (garde compatibilité JS existant) ── -->
-    <div class="loading" id="loading" style="display:none"></div>
-
-    <!-- ── Results Section ── -->
-    <section class="results" id="results">
-
-        <!-- Titre + résumé -->
-        <div class="res-header">
-            <h1 class="page-title">Résultats</h1>
-            <p class="page-desc" id="resultSummary"></p>
-        </div>
-
-        <!-- Stats strip -->
-        <div class="res-stats" id="stats"></div>
-
-        <!-- Fichiers générés -->
-        <div class="res-section-label">Fichiers générés</div>
-        <div class="card res-files" id="downloads"></div>
-
-        <!-- Détail des écritures -->
-        <div class="res-section-label">Détail des écritures</div>
-        <div class="card res-table-wrap">
-            <table class="detail-table">
-                <thead>
-                    <tr>
-                        <th>Fichier</th>
-                        <th>Statut</th>
-                        <th>Réf</th>
-                        <th>Libellé</th>
-                    </tr>
-                </thead>
-                <tbody id="detailBody"></tbody>
-            </table>
-        </div>
-
-        <!-- Nouveau traitement -->
-        <div class="res-footer">
-            <button class="btn btn-ghost res-back-btn" onclick="resetAll()">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M19 12H5m0 0 7 7m-7-7 7-7"/>
-                </svg>
-                Nouveau traitement
+        <!-- Nav items -->
+        <nav class="dk-nav">
+            <button class="dk-nav-item active" data-tab="upload" onclick="switchTab('upload')">
+                <span class="dk-nav-icon">📤</span>
+                <span>Saisie comptable</span>
             </button>
+            <button class="dk-nav-item" data-tab="history" onclick="switchTab('history')">
+                <span class="dk-nav-icon">📜</span>
+                <span>Historique</span>
+            </button>
+            <button class="dk-nav-item" data-tab="stats" onclick="switchTab('stats')">
+                <span class="dk-nav-icon">📊</span>
+                <span>Statistiques</span>
+            </button>
+            <button class="dk-nav-item" data-tab="corrections" onclick="switchTab('corrections')">
+                <span class="dk-nav-icon">✏️</span>
+                <span>Tickets corrigés</span>
+            </button>
+            <button class="dk-nav-item" data-tab="settings" onclick="switchTab('settings')">
+                <span class="dk-nav-icon">⚙️</span>
+                <span>Paramètres</span>
+            </button>
+        </nav>
+
+        <!-- Footer utilisateur -->
+        <div class="dk-sidebar-footer">
+            <div class="dk-user-row">
+                <span class="dk-username">Connecté</span>
+                <a href="/logout" class="dk-logout">Déco</a>
+            </div>
         </div>
+    </aside>
 
-    </section>
+    <!-- ══ MAIN ══════════════════════════════════════════════ -->
+    <main class="dk-main">
 
+        <!-- ─── TAB : Saisie comptable ─────────────────────── -->
+        <section class="dk-tab-section active" id="tab-upload">
+
+            <!-- Upload state -->
+            <div id="dk-upload-state">
+                <div class="dk-formula">=PROCESS_RECEIPTS()</div>
+                <h1 class="dk-h1">Saisie comptable</h1>
+                <p class="dk-subtitle">Déposez vos justificatifs pour générer les écritures Sage.</p>
+
+                <!-- Dropzone -->
+                <div class="dk-dropzone" id="dropzone">
+                    <div class="dk-dz-icon">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 15V3m0 0L8 7m4-4 4 4"/>
+                            <path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>
+                        </svg>
+                    </div>
+                    <div class="dk-dz-text">Glissez vos fichiers ici</div>
+                    <div class="dk-dz-hint">PDF, ZIP jusqu'à 50 Mo — glissez plusieurs fichiers à la fois</div>
+                    <div class="dk-dz-badges">
+                        <span class="dk-badge-format">PDF</span>
+                        <span class="dk-badge-format">ZIP</span>
+                    </div>
+                    <input type="file" id="fileInput" multiple accept=".pdf,.zip">
+                </div>
+
+                <!-- File card -->
+                <div class="dk-file-card" id="fileCard" style="display:none">
+                    <div class="dk-file-card-header">
+                        <span class="dk-file-card-title">Fichiers sélectionnés (<span id="fileCount">0</span>)</span>
+                        <button class="dk-clear-btn" id="clearAllBtn">Effacer tout</button>
+                    </div>
+                    <div id="fileList"></div>
+                </div>
+
+                <!-- Process button -->
+                <button class="dk-btn-primary" id="processBtn" disabled>
+                    Analyser les justificatifs
+                </button>
+            </div>
+
+            <!-- Processing state -->
+            <div id="dk-processing-state" style="display:none">
+                <div class="dk-formula">=PROCESSING()</div>
+                <h1 class="dk-h1">Analyse en cours</h1>
+                <p class="dk-subtitle">L'IA traite vos justificatifs. Ne fermez pas cette page.</p>
+
+                <div class="dk-processing-card">
+                    <!-- Steps -->
+                    <div class="dk-steps" id="dkSteps">
+                        <div class="dk-step active" id="step-upload">
+                            <div class="dk-step-dot active">◉</div>
+                            <span class="dk-step-label">Chargement des fichiers</span>
+                        </div>
+                        <div class="dk-step waiting" id="step-extract">
+                            <div class="dk-step-dot waiting">○</div>
+                            <span class="dk-step-label">Extraction des données</span>
+                        </div>
+                        <div class="dk-step waiting" id="step-validate">
+                            <div class="dk-step-dot waiting">○</div>
+                            <span class="dk-step-label">Validation comptable</span>
+                        </div>
+                        <div class="dk-step waiting" id="step-export">
+                            <div class="dk-step-dot waiting">○</div>
+                            <span class="dk-step-label">Génération des fichiers</span>
+                        </div>
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div class="dk-progress-track">
+                        <div class="dk-progress-bar" id="progressBar"></div>
+                    </div>
+
+                    <!-- Footer -->
+                    <div class="dk-processing-footer">
+                        <div class="dk-processing-files" id="progressFiles"></div>
+                        <div class="dk-timer" id="elapsedTimer">⏱ 0 s</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results state -->
+            <div id="dk-results-state" style="display:none">
+                <div class="dk-formula">=RESULTS()</div>
+                <h1 class="dk-h1">Résultats</h1>
+                <p class="dk-subtitle" id="resultSummary"></p>
+
+                <!-- Stats -->
+                <div class="dk-stats-grid" id="stats"></div>
+
+                <!-- Fichiers générés -->
+                <div class="dk-section-label">Fichiers générés</div>
+                <div class="dk-files-card" id="downloads"></div>
+
+                <!-- Tableau -->
+                <div class="dk-section-label">Détail des écritures</div>
+                <div class="dk-table-card">
+                    <table class="dk-table">
+                        <thead>
+                            <tr>
+                                <th>Fichier</th>
+                                <th>Statut</th>
+                                <th>Réf</th>
+                                <th>Libellé</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detailBody"></tbody>
+                    </table>
+                </div>
+
+                <!-- Retour -->
+                <button class="dk-back-btn" onclick="resetAll()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 12H5m0 0 7 7m-7-7 7-7"/>
+                    </svg>
+                    Nouveau traitement
+                </button>
+            </div>
+
+        </section>
+
+        <!-- ─── TAB : Historique ───────────────────────────── -->
+        <section class="dk-tab-section" id="tab-history">
+            <div class="dk-formula">=PAST_RUNS()</div>
+            <h1 class="dk-h1">Historique</h1>
+            <p class="dk-subtitle">Vos traitements précédents.</p>
+            <div class="dk-placeholder">
+                <div class="dk-placeholder-icon">📜</div>
+                Historique disponible prochainement
+            </div>
+        </section>
+
+        <!-- ─── TAB : Statistiques ────────────────────────── -->
+        <section class="dk-tab-section" id="tab-stats">
+            <div class="dk-formula">=ANALYTICS()</div>
+            <h1 class="dk-h1">Statistiques</h1>
+            <p class="dk-subtitle">Vue d'ensemble de vos données comptables.</p>
+            <div class="dk-placeholder">
+                <div class="dk-placeholder-icon">📊</div>
+                Statistiques disponibles prochainement
+            </div>
+        </section>
+
+        <!-- ─── TAB : Tickets corrigés ────────────────────── -->
+        <section class="dk-tab-section" id="tab-corrections">
+            <div class="dk-formula">=CORRECTIONS()</div>
+            <h1 class="dk-h1">Tickets corrigés</h1>
+            <p class="dk-subtitle">Justificatifs nécessitant une vérification manuelle.</p>
+            <div class="dk-placeholder">
+                <div class="dk-placeholder-icon">✏️</div>
+                Module de correction disponible prochainement
+            </div>
+        </section>
+
+        <!-- ─── TAB : Paramètres ──────────────────────────── -->
+        <section class="dk-tab-section" id="tab-settings">
+            <div class="dk-formula">=CONFIG()</div>
+            <h1 class="dk-h1">Paramètres</h1>
+            <p class="dk-subtitle">Configuration de votre agent comptable.</p>
+            <div class="dk-placeholder">
+                <div class="dk-placeholder-icon">⚙️</div>
+                Paramètres disponibles prochainement
+            </div>
+        </section>
+
+    </main>
 </div>
 {% endblock %}
 
