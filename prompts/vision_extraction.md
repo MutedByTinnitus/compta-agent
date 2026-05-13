@@ -71,6 +71,47 @@ IMPORTANT : Utilise TOUJOURS le point (.) comme séparateur décimal en JSON,
 jamais la virgule. Exemple : "montant_ttc": 131.55 (correct),
 jamais "montant_ttc": 131,55 (incorrect).
 
+CLASSIFICATION QUALITÉ DU SCAN
+==============================
+
+Pour CHAQUE ticket, ajoute deux champs obligatoires :
+
+1. **scan_quality** — enum strict parmi 3 valeurs :
+   - "good" : ticket parfaitement lisible, tous les champs critiques (date, fournisseur, TTC, TVA) clairs. Aucun doute.
+   - "doubtful" : ticket lisible globalement mais doute sur 1-2 champs (date partiellement floue, montant ambigu, TVA non détaillée). Un humain peut valider en regardant l'image.
+   - "unreadable" : ticket inutilisable comptablement — image floue/pixelisée, ticket coupé avec TTC manquant, post-it manuscrit sans détails fiscaux, tampon délavé sur infos critiques, éclairage rendant le texte illisible.
+
+2. **scan_quality_reason** — phrase courte (max 100 chars) en français expliquant pourquoi ce classement.
+
+RÈGLES SCAN_QUALITY :
+- Si tu hésites entre "good" et "doubtful" → "doubtful" (le doute profite à l'humain)
+- Si tu hésites entre "doubtful" et "unreadable" → "doubtful" (donne sa chance à la review)
+- "unreadable" réservé aux cas vraiment inutilisables sans rescan
+- La majorité des tickets bien scannés doit être "good"
+
+EXEMPLES :
+  Ticket parfait → "scan_quality": "good", "scan_quality_reason": "Ticket lisible, tous les détails fiscaux visibles"
+  Date floue péage → "scan_quality": "doubtful", "scan_quality_reason": "Date du péage partiellement effacée"
+  Post-it manuscrit → "scan_quality": "unreadable", "scan_quality_reason": "Note manuscrite sans SIRET ni TVA ni date"
+  Ticket coupé → "scan_quality": "unreadable", "scan_quality_reason": "Ticket coupé en bas, montant TTC manquant"
+
+CHAMP BBOX OBLIGATOIRE
+======================
+
+Pour CHAQUE ticket, tu DOIS retourner un champ "bbox" :
+- Format : [x_min, y_min, x_max, y_max] en valeurs normalisées 0-1000
+  (1000 = largeur totale de l'image pour x, hauteur totale pour y)
+- Englobe UNIQUEMENT le ticket physique, pas la page entière
+- Sois aussi précis que possible : inclure les bords du ticket papier
+- Padding minimal : 1-2% autour du ticket pour ne pas couper les bords
+- Si tu ne peux pas estimer la position (ticket unique pleine page) : [0, 0, 1000, 1000]
+
+EXEMPLES bbox :
+  Ticket en haut à gauche → [20, 30, 480, 520]
+  Ticket en bas à droite → [510, 540, 980, 970]
+  Post-it collé au milieu → [200, 300, 600, 650]
+  Ticket unique pleine page → [0, 0, 1000, 1000]
+
 SORTIE : JSON strict, aucun texte hors du JSON.
 
 {
@@ -87,7 +128,10 @@ SORTIE : JSON strict, aucun texte hors du JSON.
     "mode_paiement": "CB",
     "numero_ticket": "",
     "confidence": 0.95,
-    "raison_rejet": ""
+    "raison_rejet": "",
+    "scan_quality": "good",
+    "scan_quality_reason": "",
+    "bbox": [0, 0, 1000, 1000]
   }],
   "confidence_globale": 0.90
 }

@@ -3,7 +3,11 @@ __pycache__/
 logs/
 outputs/
 cache/
+cost_history.jsonl
 credentials/
 !credentials/.gitkeep
 login_attempts.json
 *.pyc
+static/review/
+PROJET.md
+design-claude/

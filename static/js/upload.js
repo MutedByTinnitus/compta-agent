@@ -7,6 +7,7 @@ function switchTab(tabId) {
     document.querySelectorAll('.dk-nav-item').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + tabId).classList.add('active');
     document.querySelector('[data-tab="' + tabId + '"]').classList.add('active');
+    if (tabId === 'corrections') onTabSwitchToReview();
 }
 
 // ── DOM refs ───────────────────────────────────────────────────────────────────
@@ -297,6 +298,8 @@ processBtn.addEventListener('click', async () => {
             return;
         }
 
+        if (data.run_id) sessionStorage.setItem('lastRunId', data.run_id);
+
         showResults(data);
 
     } catch (err) {
@@ -312,9 +315,33 @@ function showResults(data) {
     resultsState.style.display    = 'block';
 
     const s = data.summary;
+    const rv = data.review || {};
 
     document.getElementById('resultSummary').textContent =
         `${s.total} justificatif(s) traité(s) · ${s.exploites} exploitable(s) · ${s.inexploites} rejeté(s)`;
+
+    // Bannière review si des tickets sont à valider ou à rescanner
+    const existingBanner = document.getElementById('rv-banner');
+    if (existingBanner) existingBanner.remove();
+    if (rv.has_queue && (rv.count > 0 || rv.rescan_count > 0)) {
+        const parts = [];
+        if (rv.count > 0) parts.push(`<strong>${rv.count} douteux</strong>`);
+        if (rv.rescan_count > 0) parts.push(`<strong>${rv.rescan_count} illisibles</strong>`);
+        const banner = document.createElement('div');
+        banner.id = 'rv-banner';
+        banner.className = 'rv-notice-banner';
+        banner.innerHTML = `
+            <span class="rv-notice-icon">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+            </span>
+            <span>${parts.join(', ')} nécessite${parts.length > 1 ? 'nt' : ''} une révision.</span>
+            <button onclick="switchTab('corrections')" class="rv-notice-btn">Réviser maintenant</button>
+        `;
+        document.getElementById('resultSummary').after(banner);
+    }
 
     // Stats grid
     document.getElementById('stats').innerHTML = `
@@ -412,6 +439,275 @@ function iconDocAlert() {
         <line x1="12" y1="10" x2="12.01" y2="10"/>
     </svg>`;
 }
+
+// ── Review Queue ───────────────────────────────────────────────────────────────
+const rvState = {
+    runId: null,
+    queue: null,
+    selectedId: null,
+    activeSubtab: 'all',
+};
+
+function switchReviewSubtab(name) {
+    rvState.activeSubtab = name;
+    document.querySelectorAll('.rv-subtab').forEach(b =>
+        b.classList.toggle('active', b.dataset.subtab === name)
+    );
+    document.querySelectorAll('.rv-subpanel').forEach(p => {
+        p.style.display = p.id === 'subpanel-' + name ? '' : 'none';
+    });
+}
+
+function onTabSwitchToReview() {
+    const lastRunId = sessionStorage.getItem('lastRunId');
+    if (lastRunId) {
+        loadReviewQueue(lastRunId);
+    } else {
+        showReviewEmpty();
+    }
+}
+
+async function loadReviewQueue(runId) {
+    rvState.runId = runId;
+    try {
+        const res = await fetch(`/api/review/${runId}`);
+        if (!res.ok) { showReviewEmpty(); return; }
+        rvState.queue = await res.json();
+        renderReviewQueue();
+    } catch (e) {
+        showReviewEmpty();
+    }
+}
+
+function showReviewEmpty() {
+    document.getElementById('review-empty').style.display = '';
+    document.getElementById('review-queue').style.display = 'none';
+}
+
+function updateFinalizeBtnState() {
+    const q = rvState.queue;
+    if (!q) return;
+    const pending = q.tickets.filter(t => t.review_status === 'pending').length;
+    const btn = document.getElementById('btn-finalize');
+    if (btn) btn.disabled = pending > 0;
+}
+
+function _ticketCard(ticket) {
+    const sq = ticket.scan_quality || 'good';
+    const badgeClass = sq === 'unreadable' ? 'rv-badge-unreadable' :
+                       sq === 'doubtful'   ? 'rv-badge-doubtful' : 'rv-badge-good';
+    const badgeLabel = sq === 'unreadable' ? 'Illisible' :
+                       sq === 'doubtful'   ? 'Douteux' : 'OK';
+    const imgSrc = ticket.review_image_path ? `/static/${ticket.review_image_path}` : '';
+    const statusLabel = ticket.review_status === 'validated' ? ' · validé' :
+                        ticket.review_status === 'ignored' ? ' · ignoré' :
+                        ticket.review_status === 'duplicate' ? ' · duplicata' : '';
+    const card = document.createElement('div');
+    card.className = 'rv-ticket-card';
+    card.innerHTML = `
+        ${imgSrc ? `<img src="${imgSrc}" alt="Ticket" loading="lazy" />` : '<div style="aspect-ratio:3/4;background:var(--bg-2);border-radius:6px;"></div>'}
+        <div class="rv-ticket-card-name">${ticket.fournisseur || '—'}${statusLabel}</div>
+        <div class="rv-ticket-card-meta">
+            <span>${ticket.date || '—'}</span>
+            <span>${ticket.montant_ttc ? ticket.montant_ttc + ' €' : '?'}</span>
+        </div>
+        <span class="rv-ticket-card-badge ${badgeClass}">${badgeLabel}</span>
+        ${ticket.scan_quality_reason ? `<div style="font-size:11px;color:var(--text-dim)">${ticket.scan_quality_reason}</div>` : ''}
+    `;
+    return card;
+}
+
+function renderReviewQueue() {
+    const q = rvState.queue;
+    const goodTickets   = q.good_tickets   || [];
+    const doubtTickets  = q.tickets        || [];
+    const rescanTickets = q.rescan_tickets || [];
+
+    const total = goodTickets.length + doubtTickets.length + rescanTickets.length;
+    if (total === 0) { showReviewEmpty(); return; }
+
+    document.getElementById('review-empty').style.display = 'none';
+    document.getElementById('review-queue').style.display = '';
+
+    // Badges compteurs
+    document.getElementById('badge-all').textContent = total;
+    document.getElementById('badge-doubtful').textContent = doubtTickets.filter(t => t.review_status === 'pending').length;
+    document.getElementById('badge-rescan').textContent = rescanTickets.length;
+
+    // Badge nav sidebar
+    const navBadge = document.getElementById('nav-badge-review');
+    const actionCount = doubtTickets.filter(t => t.review_status === 'pending').length + rescanTickets.length;
+    if (navBadge) {
+        navBadge.textContent = actionCount;
+        navBadge.style.display = actionCount > 0 ? '' : 'none';
+    }
+
+    // ── Grille "Tous les tickets" ──
+    const allGrid = document.getElementById('rv-all-grid');
+    allGrid.innerHTML = '';
+    [...goodTickets, ...doubtTickets, ...rescanTickets].forEach(t => allGrid.appendChild(_ticketCard(t)));
+
+    // ── Liste "À valider" ──
+    updateFinalizeBtnState();
+    const list = document.getElementById('rv-list');
+    list.innerHTML = '';
+    doubtTickets.forEach(ticket => {
+        const item = document.createElement('div');
+        item.className = 'rv-list-item' + (ticket.ticket_id === rvState.selectedId ? ' active' : '');
+        item.dataset.ticketId = ticket.ticket_id;
+
+        const reasons = (ticket.review_reasons || []).slice(0, 2).join(' · ');
+        const statusLabel = ticket.review_status === 'pending' ? '' :
+            `<div class="rv-item-status ${ticket.review_status}">${ticket.review_status}</div>`;
+
+        item.innerHTML = `
+            <div class="rv-item-summary">
+                ${ticket.fournisseur || '—'} · ${ticket.montant_ttc ? ticket.montant_ttc + ' €' : '?'}
+                ${ticket.date ? '· ' + ticket.date : ''}
+            </div>
+            <div class="rv-item-reasons">${reasons}</div>
+            ${statusLabel}
+        `;
+        item.addEventListener('click', () => selectReviewTicket(ticket.ticket_id));
+        list.appendChild(item);
+    });
+
+    const pending = doubtTickets.filter(t => t.review_status === 'pending');
+    if (!rvState.selectedId && pending.length > 0) {
+        selectReviewTicket(pending[0].ticket_id);
+    }
+
+    // ── Grille "À rescanner" ──
+    const rescanGrid = document.getElementById('rv-rescan-grid');
+    rescanGrid.innerHTML = '';
+    rescanTickets.forEach(t => rescanGrid.appendChild(_ticketCard(t)));
+
+    const dlBtn = document.getElementById('btn-download-rescan');
+    if (dlBtn) {
+        dlBtn.href = q.rescan_pdf ? `/api/rescan-pdf/${rvState.runId}` : '#';
+        dlBtn.style.opacity = q.rescan_pdf ? '1' : '0.4';
+        dlBtn.style.pointerEvents = q.rescan_pdf ? '' : 'none';
+    }
+
+    // Switcher vers le bon sous-onglet par défaut selon les données
+    switchReviewSubtab(rvState.activeSubtab);
+}
+
+function selectReviewTicket(ticketId) {
+    rvState.selectedId = ticketId;
+    const ticket = rvState.queue && rvState.queue.tickets.find(t => t.ticket_id === ticketId);
+    if (!ticket) return;
+
+    document.querySelectorAll('.rv-list-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.ticketId === ticketId);
+    });
+
+    const img = document.getElementById('rv-image');
+    img.src = ticket.review_image_path ? `/static/${ticket.review_image_path}` : '';
+
+    document.getElementById('rv-date').value = ticket.date || '';
+    document.getElementById('rv-fournisseur').value = ticket.fournisseur || '';
+    document.getElementById('rv-ttc').value = ticket.montant_ttc || '';
+    document.getElementById('rv-ht').value = ticket.montant_ht || '';
+    document.getElementById('rv-tva').value = ticket.montant_tva || '';
+    document.getElementById('rv-mode').value = ticket.mode_paiement || 'CB';
+    document.getElementById('rv-categorie').value = ticket.type || '';
+
+    const sqReason = ticket.scan_quality_reason;
+    const sqLabel  = ticket.scan_quality ? ticket.scan_quality.toUpperCase() : 'REVIEW';
+    const fallbackReasons = (ticket.review_reasons || []).join(' · ');
+    document.getElementById('rv-reasons').textContent = sqReason
+        ? `${sqLabel}: ${sqReason}`
+        : (fallbackReasons || 'Vérification recommandée');
+}
+
+async function rvPatchTicket(action, extraFields) {
+    const ticketId = rvState.selectedId;
+    if (!ticketId || !rvState.runId) return;
+
+    const body = { action };
+    if (extraFields) body.fields = extraFields;
+
+    await fetch(`/api/review/${rvState.runId}/${ticketId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+        body: JSON.stringify(body),
+    });
+
+    rvState.selectedId = null;
+    await loadReviewQueue(rvState.runId);
+}
+
+document.getElementById('btn-rv-validate').addEventListener('click', () => {
+    rvPatchTicket('validate', {
+        date: document.getElementById('rv-date').value,
+        fournisseur: document.getElementById('rv-fournisseur').value,
+        montant_ttc: parseFloat(document.getElementById('rv-ttc').value) || 0,
+        montant_ht: parseFloat(document.getElementById('rv-ht').value) || 0,
+        montant_tva: parseFloat(document.getElementById('rv-tva').value) || 0,
+        mode_paiement: document.getElementById('rv-mode').value,
+        type: document.getElementById('rv-categorie').value,
+    });
+});
+
+document.getElementById('btn-rv-ignore').addEventListener('click', () => rvPatchTicket('ignore'));
+document.getElementById('btn-rv-duplicate').addEventListener('click', () => rvPatchTicket('duplicate'));
+
+document.getElementById('btn-ignore-duplicates').addEventListener('click', async () => {
+    if (!rvState.runId) return;
+    const res = await fetch(`/api/review/${rvState.runId}/ignore-duplicates`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': CSRF_TOKEN },
+    });
+    const data = await res.json();
+    if (data.ignored_count > 0) {
+        rvState.selectedId = null;
+        await loadReviewQueue(rvState.runId);
+    }
+});
+
+document.getElementById('btn-finalize').addEventListener('click', async () => {
+    if (!rvState.runId) return;
+    const res = await fetch(`/api/review/${rvState.runId}/finalize`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': CSRF_TOKEN },
+    });
+    const data = await res.json();
+    if (data.ok && data.excel_url) {
+        window.location.href = data.excel_url;
+    }
+});
+
+// ── Lightbox ───────────────────────────────────────────────────────────────────
+(function initLightbox() {
+    const lightbox = document.getElementById('lightbox');
+    const lightboxImg = document.getElementById('lightbox-img');
+    const lightboxClose = document.getElementById('lightbox-close');
+    if (!lightbox || !lightboxImg) return;
+
+    function open(src) {
+        lightboxImg.src = src;
+        lightbox.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function close() {
+        lightbox.classList.add('hidden');
+        lightboxImg.src = '';
+        document.body.style.overflow = '';
+    }
+
+    document.addEventListener('click', e => {
+        const img = e.target.closest('.rv-image-wrap img, .rv-ticket-card img');
+        if (img && img.src) open(img.src);
+    });
+
+    lightboxClose.addEventListener('click', close);
+    lightbox.addEventListener('click', e => { if (e.target === lightbox) close(); });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !lightbox.classList.contains('hidden')) close();
+    });
+})();
 
 // ── Reset ──────────────────────────────────────────────────────────────────────
 function resetAll() {

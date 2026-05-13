@@ -1,16 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Kompta.ai — Dashboard{% endblock %}
+{% block title %}Enop.ai — Dashboard{% endblock %}
 
 {% block css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard-dark.css') }}">
 <style>
-    /* Neutralise le fond clair du body pour ce template */
-    html, body {
-        background: #0a1410 !important;
-        margin: 0;
-        padding: 0;
-    }
+    html, body { margin: 0; padding: 0; }
+    body.dark { background: #02181a !important; }
 </style>
 {% endblock %}
 
@@ -21,7 +17,7 @@
     <aside class="dk-sidebar">
         <!-- Logo -->
         <div class="dk-sidebar-logo">
-            <div class="dk-logo-name">Kompta.ai</div>
+            <div class="dk-logo-name">Enop<span class="dk-logo-dot">.ai</span></div>
             <div class="dk-logo-tag">Agent comptable</div>
         </div>
 
@@ -52,7 +48,8 @@
                 <span class="dk-nav-icon">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </span>
-                <span>Tickets corrigés</span>
+                <span>Révision tickets</span>
+                <span class="dk-nav-badge" id="nav-badge-review" style="display:none"></span>
             </button>
             <button class="dk-nav-item" data-tab="settings" onclick="switchTab('settings')">
                 <span class="dk-nav-icon">
@@ -68,6 +65,15 @@
                 <span class="dk-username">Connecté</span>
                 <a href="/logout" class="dk-logout">Déco</a>
             </div>
+            <button class="dk-theme-toggle" id="themeToggle" title="Changer le thème">
+                <span class="dk-theme-icon dk-theme-sun">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                </span>
+                <span class="dk-theme-icon dk-theme-moon">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                </span>
+                <span class="dk-theme-label" id="themeLabel">Dark</span>
+            </button>
         </div>
     </aside>
 
@@ -79,7 +85,7 @@
 
             <!-- Upload state -->
             <div id="dk-upload-state">
-                <div class="dk-formula">=PROCESS_RECEIPTS()</div>
+                <div class="dk-eyebrow">Enop.ai — Agent comptable</div>
                 <h1 class="dk-h1">Saisie comptable</h1>
                 <p class="dk-subtitle">Déposez vos justificatifs pour générer les écritures Sage.</p>
 
@@ -117,9 +123,9 @@
 
             <!-- Processing state -->
             <div id="dk-processing-state" style="display:none">
-                <div class="dk-formula">=PROCESSING()</div>
+                <div class="dk-eyebrow">Analyse en cours</div>
 
-                <div class="dk-processing-card">
+                <div class="dk-processing-card scanning" id="processingCard">
                     <!-- Header -->
                     <div class="dk-processing-header">
                         <div>
@@ -210,7 +216,7 @@
 
             <!-- Results state -->
             <div id="dk-results-state" style="display:none">
-                <div class="dk-formula">=RESULTS()</div>
+                <div class="dk-eyebrow">Traitement terminé</div>
                 <h1 class="dk-h1">Résultats</h1>
                 <p class="dk-subtitle" id="resultSummary"></p>
 
@@ -250,8 +256,8 @@
 
         <!-- ─── TAB : Historique ───────────────────────────── -->
         <section class="dk-tab-section" id="tab-history">
-            <div class="dk-formula">=PAST_RUNS()</div>
-            <h1 class="dk-h1">Historique</h1>
+            <div class="dk-eyebrow">Historique</div>
+            <h1 class="dk-h1">Traitements passés</h1>
             <p class="dk-subtitle">Vos traitements précédents.</p>
             <div class="dk-placeholder">
                 Historique disponible prochainement
@@ -260,7 +266,7 @@
 
         <!-- ─── TAB : Statistiques ────────────────────────── -->
         <section class="dk-tab-section" id="tab-stats">
-            <div class="dk-formula">=ANALYTICS()</div>
+            <div class="dk-eyebrow">Analytiques</div>
             <h1 class="dk-h1">Statistiques</h1>
             <p class="dk-subtitle">Vue d'ensemble de vos données comptables.</p>
             <div class="dk-placeholder">
@@ -268,19 +274,134 @@
             </div>
         </section>
 
-        <!-- ─── TAB : Tickets corrigés ────────────────────── -->
+        <!-- ─── TAB : Révision tickets ──────────────────────── -->
         <section class="dk-tab-section" id="tab-corrections">
-            <div class="dk-formula">=CORRECTIONS()</div>
-            <h1 class="dk-h1">Tickets corrigés</h1>
-            <p class="dk-subtitle">Justificatifs nécessitant une vérification manuelle.</p>
-            <div class="dk-placeholder">
-                Module de correction disponible prochainement
+
+            <!-- État vide -->
+            <div id="review-empty">
+                <div class="dk-eyebrow">Révision</div>
+                <h1 class="dk-h1">Révision des tickets</h1>
+                <p class="dk-subtitle">Aucune analyse en cours.</p>
+                <div class="dk-placeholder">Lancez une analyse pour voir apparaître les tickets ici.</div>
             </div>
+
+            <!-- Queue active -->
+            <div id="review-queue" style="display:none">
+                <div class="dk-eyebrow">Révision tickets</div>
+                <h1 class="dk-h1">Révision des tickets</h1>
+
+                <!-- Sous-onglets -->
+                <div class="rv-subtabs">
+                    <button class="rv-subtab active" data-subtab="all" onclick="switchReviewSubtab('all')">
+                        Tous les tickets
+                        <span class="rv-subtab-badge" id="badge-all">0</span>
+                    </button>
+                    <button class="rv-subtab" data-subtab="doubtful" onclick="switchReviewSubtab('doubtful')">
+                        À valider
+                        <span class="rv-subtab-badge rv-subtab-badge--amber" id="badge-doubtful">0</span>
+                    </button>
+                    <button class="rv-subtab" data-subtab="rescan" onclick="switchReviewSubtab('rescan')">
+                        À rescanner
+                        <span class="rv-subtab-badge rv-subtab-badge--red" id="badge-rescan">0</span>
+                    </button>
+                </div>
+
+                <!-- ── Sous-onglet Tous les tickets ── -->
+                <div class="rv-subpanel" id="subpanel-all">
+                    <div class="rv-ticket-grid" id="rv-all-grid"></div>
+                </div>
+
+                <!-- ── Sous-onglet À valider (doubtful) ── -->
+                <div class="rv-subpanel" id="subpanel-doubtful" style="display:none">
+                    <div class="rv-batch-actions">
+                        <button id="btn-ignore-duplicates" class="dk-btn-outline">
+                            Ignorer tous les duplicatas
+                        </button>
+                        <button id="btn-finalize" class="dk-btn-primary" disabled>
+                            Finaliser et générer l'Excel
+                        </button>
+                    </div>
+
+                    <div class="rv-grid">
+                        <!-- Liste gauche -->
+                        <div class="rv-list" id="rv-list"></div>
+
+                        <!-- Détail droite -->
+                        <div class="rv-detail" id="rv-detail">
+                            <div class="rv-image-wrap">
+                                <img id="rv-image" src="" alt="Ticket" />
+                            </div>
+
+                            <div class="rv-fields">
+                                <div class="dk-eyebrow" id="rv-reasons" style="margin-bottom:16px"></div>
+
+                                <div class="rv-field-group">
+                                    <label>Date</label>
+                                    <input type="text" id="rv-date" placeholder="JJ/MM/AAAA" />
+                                </div>
+                                <div class="rv-field-group">
+                                    <label>Fournisseur</label>
+                                    <input type="text" id="rv-fournisseur" />
+                                </div>
+                                <div class="rv-field-row">
+                                    <div class="rv-field-group">
+                                        <label>TTC (€)</label>
+                                        <input type="number" step="0.01" id="rv-ttc" />
+                                    </div>
+                                    <div class="rv-field-group">
+                                        <label>HT (€)</label>
+                                        <input type="number" step="0.01" id="rv-ht" />
+                                    </div>
+                                    <div class="rv-field-group">
+                                        <label>TVA (€)</label>
+                                        <input type="number" step="0.01" id="rv-tva" />
+                                    </div>
+                                </div>
+                                <div class="rv-field-group">
+                                    <label>Mode de paiement</label>
+                                    <select id="rv-mode">
+                                        <option value="CB">CB</option>
+                                        <option value="ESPECES">Espèces</option>
+                                        <option value="CHEQUE">Chèque</option>
+                                        <option value="VIREMENT">Virement</option>
+                                    </select>
+                                </div>
+                                <div class="rv-field-group">
+                                    <label>Catégorie</label>
+                                    <input type="text" id="rv-categorie" placeholder="carburant, peage, repas…" />
+                                </div>
+
+                                <div class="rv-actions">
+                                    <button id="btn-rv-validate" class="dk-btn-primary">Valider</button>
+                                    <button id="btn-rv-ignore" class="dk-btn-outline">Ignorer</button>
+                                    <button id="btn-rv-duplicate" class="dk-btn-outline">Duplicata</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Sous-onglet À rescanner ── -->
+                <div class="rv-subpanel" id="subpanel-rescan" style="display:none">
+                    <div class="rv-notice-banner rv-notice-banner--red" id="rescan-notice">
+                        <strong>Ces tickets sont illisibles.</strong>
+                        Téléchargez le PDF pour les rescanner manuellement.
+                    </div>
+                    <div class="rv-rescan-actions">
+                        <a id="btn-download-rescan" class="dk-btn-primary" href="#" download>
+                            Télécharger le PDF à rescanner
+                        </a>
+                    </div>
+                    <div class="rv-ticket-grid" id="rv-rescan-grid"></div>
+                </div>
+
+            </div>
+
         </section>
 
         <!-- ─── TAB : Paramètres ──────────────────────────── -->
         <section class="dk-tab-section" id="tab-settings">
-            <div class="dk-formula">=CONFIG()</div>
+            <div class="dk-eyebrow">Configuration</div>
             <h1 class="dk-h1">Paramètres</h1>
             <p class="dk-subtitle">Configuration de votre agent comptable.</p>
             <div class="dk-placeholder">
@@ -290,9 +411,32 @@
 
     </main>
 </div>
+
+<!-- Lightbox zoom tickets -->
+<div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Image ticket agrandie">
+    <button id="lightbox-close" class="lightbox-close" aria-label="Fermer">&times;</button>
+    <img id="lightbox-img" src="" alt="Ticket agrandi" />
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>const CSRF_TOKEN = '{{ csrf_token }}';</script>
 <script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+<script>
+(function() {
+    const btn = document.getElementById('themeToggle');
+    const label = document.getElementById('themeLabel');
+    const saved = localStorage.getItem('enop-theme');
+    if (saved === 'dark') {
+        document.body.classList.add('dark');
+        label.textContent = 'Light';
+    }
+    btn.addEventListener('click', function() {
+        const isDark = document.body.classList.toggle('dark');
+        label.textContent = isDark ? 'Light' : 'Dark';
+        localStorage.setItem('enop-theme', isDark ? 'dark' : 'light');
+    });
+})();
+</script>
 {% endblock %}

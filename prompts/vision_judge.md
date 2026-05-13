@@ -33,6 +33,14 @@ CHECKS à effectuer :
 4. Tickets hallucinés : y a-t-il un ticket dans l'extraction qui ne 
    correspond à rien de visible sur l'image ?
 
+5. Qualité du scan : pour chaque ticket, évalue scan_quality et 
+   scan_quality_reason. Tu peux corriger la valeur proposée par le premier 
+   modèle si elle est manifestement fausse.
+   - "good" : tous les champs critiques (date, fournisseur, TTC, TVA) clairs
+   - "doubtful" : lisible globalement mais doute sur 1-2 champs
+   - "unreadable" : inutilisable comptablement (flou, coupé, manuscrit sans détails)
+   Si tu hésites entre deux niveaux, choisis le moins sévère (doubtful > unreadable, good > doubtful).
+
 SORTIE : JSON avec la liste CORRIGÉE de tickets (mêmes champs que 
 l'extraction d'entrée), + un champ "modifications" qui liste ce que tu 
 as changé.
@@ -54,7 +62,9 @@ as changé.
     "mode_paiement": "CB",
     "numero_ticket": "",
     "confidence": 0.95,
-    "raison_rejet": ""
+    "raison_rejet": "",
+    "scan_quality": "good",
+    "scan_quality_reason": ""
   }],
   "confidence_globale": 0.95
 }

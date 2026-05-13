@@ -48,6 +48,7 @@ from reportlab.lib.colors import red, black
 from reportlab.lib.pagesizes import A4
 
 app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Pas de cache sur les statiques en dev
 
 
 # ===================================================================
@@ -64,6 +65,160 @@ handler.setFormatter(logging.Formatter(
     '{"time": "%(asctime)s", "level": "%(levelname)s", "msg": "%(message)s"}'
 ))
 logger.addHandler(handler)
+
+
+# ===================================================================
+# COST TRACKING
+# ===================================================================
+
+import json as _json_cost
+
+PRICING_USD = {
+    'gemini_flash_input_per_1k':      0.000075,
+    'gemini_flash_output_per_1k':     0.0003,
+    'claude_sonnet_46_input_per_1k':  0.003,
+    'claude_sonnet_46_output_per_1k': 0.015,
+    'docai_form_parser_per_page':     0.0015,
+}
+USD_TO_EUR = 0.92
+
+_cost_local = threading.local()
+
+def cost_tracking_start(run_id: str = None):
+    _cost_local.run_id        = run_id or datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    _cost_local.start_time    = datetime.utcnow()
+    _cost_local.gemini_calls  = 0
+    _cost_local.gemini_in     = 0
+    _cost_local.gemini_out    = 0
+    _cost_local.claude_calls  = 0
+    _cost_local.claude_judge  = 0
+    _cost_local.claude_fb     = 0
+    _cost_local.claude_in     = 0
+    _cost_local.claude_out    = 0
+    _cost_local.docai_pages   = 0
+    _cost_local.total_pages   = 0
+    _cost_local.tickets_nb    = 0
+    _cost_local.filename      = None
+
+def _ct_init():
+    if not hasattr(_cost_local, 'run_id'):
+        cost_tracking_start()
+
+def track_gemini_usage(input_tokens: int, output_tokens: int):
+    try:
+        _ct_init()
+        _cost_local.gemini_calls += 1
+        _cost_local.gemini_in    += int(input_tokens  or 0)
+        _cost_local.gemini_out   += int(output_tokens or 0)
+    except Exception as e:
+        logger.warning(f"[Cost] track_gemini_usage: {e}")
+
+def track_claude_usage(input_tokens: int, output_tokens: int, role: str = "judge"):
+    try:
+        _ct_init()
+        _cost_local.claude_calls += 1
+        _cost_local.claude_in    += int(input_tokens  or 0)
+        _cost_local.claude_out   += int(output_tokens or 0)
+        if role == "judge":    _cost_local.claude_judge += 1
+        elif role == "fallback": _cost_local.claude_fb  += 1
+    except Exception as e:
+        logger.warning(f"[Cost] track_claude_usage: {e}")
+
+def track_docai_page():
+    try:
+        _ct_init()
+        _cost_local.docai_pages += 1
+    except Exception as e:
+        logger.warning(f"[Cost] track_docai_page: {e}")
+
+def track_run_metadata(filename=None, pages_total=None, tickets=None):
+    try:
+        _ct_init()
+        if filename    is not None: _cost_local.filename    = filename
+        if pages_total is not None: _cost_local.total_pages = pages_total
+        if tickets     is not None: _cost_local.tickets_nb  = tickets
+    except Exception as e:
+        logger.warning(f"[Cost] track_run_metadata: {e}")
+
+def cost_tracking_finalize() -> dict:
+    try:
+        _ct_init()
+        g_usd = (
+            (_cost_local.gemini_in  / 1000) * PRICING_USD['gemini_flash_input_per_1k'] +
+            (_cost_local.gemini_out / 1000) * PRICING_USD['gemini_flash_output_per_1k']
+        )
+        c_usd = (
+            (_cost_local.claude_in  / 1000) * PRICING_USD['claude_sonnet_46_input_per_1k'] +
+            (_cost_local.claude_out / 1000) * PRICING_USD['claude_sonnet_46_output_per_1k']
+        )
+        d_usd  = _cost_local.docai_pages * PRICING_USD['docai_form_parser_per_page']
+        tot    = g_usd + c_usd + d_usd
+        tot_eur = tot * USD_TO_EUR
+        dur    = (datetime.utcnow() - _cost_local.start_time).total_seconds()
+
+        summary = {
+            'run_id':           _cost_local.run_id,
+            'timestamp':        _cost_local.start_time.isoformat(),
+            'duration_s':       round(dur, 1),
+            'filename':         _cost_local.filename,
+            'pages_total':      _cost_local.total_pages,
+            'tickets_extraits': _cost_local.tickets_nb,
+            'gemini': {
+                'calls':         _cost_local.gemini_calls,
+                'input_tokens':  _cost_local.gemini_in,
+                'output_tokens': _cost_local.gemini_out,
+                'cost_usd':      round(g_usd, 5),
+            },
+            'claude': {
+                'calls':         _cost_local.claude_calls,
+                'judge_calls':   _cost_local.claude_judge,
+                'fallback_calls':_cost_local.claude_fb,
+                'input_tokens':  _cost_local.claude_in,
+                'output_tokens': _cost_local.claude_out,
+                'cost_usd':      round(c_usd, 5),
+            },
+            'docai': {
+                'pages':    _cost_local.docai_pages,
+                'cost_usd': round(d_usd, 5),
+            },
+            'total_cost_usd':      round(tot, 5),
+            'total_cost_eur':      round(tot_eur, 5),
+            'cost_per_page_eur':   round(tot_eur / max(_cost_local.total_pages,   1), 5),
+            'cost_per_ticket_eur': round(tot_eur / max(_cost_local.tickets_nb,    1), 5),
+        }
+
+        logger.info("=" * 62)
+        logger.info(f"  COÛT DU RUN {summary['run_id']}")
+        logger.info("=" * 62)
+        logger.info(f"  Fichier   : {summary['filename']}")
+        logger.info(f"  Pages     : {summary['pages_total']} | Tickets : {summary['tickets_extraits']}")
+        logger.info(f"  Durée     : {summary['duration_s']}s")
+        logger.info(f"  ---")
+        logger.info(f"  Gemini    : {summary['gemini']['calls']} appels | "
+                    f"{summary['gemini']['input_tokens']}+{summary['gemini']['output_tokens']} tok | "
+                    f"${summary['gemini']['cost_usd']}")
+        logger.info(f"  Claude J  : {summary['claude']['judge_calls']} appels")
+        logger.info(f"  Claude FB : {summary['claude']['fallback_calls']} appels")
+        logger.info(f"  Claude    : {summary['claude']['input_tokens']}+{summary['claude']['output_tokens']} tok | "
+                    f"${summary['claude']['cost_usd']}")
+        logger.info(f"  DocAI     : {summary['docai']['pages']} pages | ${summary['docai']['cost_usd']}")
+        logger.info(f"  ---")
+        logger.info(f"  TOTAL     : ${summary['total_cost_usd']} ≈ {summary['total_cost_eur']}€")
+        logger.info(f"  /page     : {summary['cost_per_page_eur']}€/page")
+        logger.info(f"  /ticket   : {summary['cost_per_ticket_eur']}€/ticket")
+        logger.info("=" * 62)
+
+        history_path = Path("/app/cost_history.jsonl")
+        try:
+            with history_path.open("a", encoding="utf-8") as f:
+                f.write(_json_cost.dumps(summary, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning(f"[Cost] Impossible d'écrire cost_history.jsonl : {e}")
+
+        return summary
+    except Exception as e:
+        logger.warning(f"[Cost] cost_tracking_finalize failed: {e}")
+        return {}
 
 
 # ===================================================================
@@ -345,6 +500,268 @@ def security_headers(response):
 
 
 # ===================================================================
+# REVIEW QUEUE — Validation manuelle des tickets incertains
+# ===================================================================
+
+import uuid as _uuid
+
+REVIEW_BASE = Path("static/review")
+REVIEW_BASE.mkdir(parents=True, exist_ok=True)
+
+
+def classify_ticket_for_review(ticket: dict) -> tuple:
+    """Retourne (needs_review: bool, reasons: list[str]).
+    Seuil confidence ajusté à 0.65 — Gemini retourne souvent 0.85-0.95 sur tickets OK.
+    Critère postit_or_note rebasé sur fournisseur générique + absence TVA/HT (pas OCR per-ticket)."""
+    reasons = []
+
+    confidence = float(ticket.get('confidence', 1.0) or 1.0)
+    if confidence < 0.65:
+        reasons.append(f'low_confidence ({confidence:.2f})')
+
+    if ticket.get('date_inferred', False):
+        reasons.append('inferred_date')
+
+    if ticket.get('ttc_cb_mismatch', False):
+        reasons.append('ttc_cb_mismatch')
+
+    if not ticket.get('date'):
+        reasons.append('missing_date')
+    if not ticket.get('montant_ttc') or float(ticket.get('montant_ttc', 0) or 0) == 0:
+        reasons.append('missing_ttc')
+    fournisseur = (ticket.get('fournisseur') or '').strip()
+    if not fournisseur or fournisseur.upper() in ('INCONNU', 'N/A', '?', 'UNKNOWN', ''):
+        reasons.append('missing_fournisseur')
+
+    raw = (ticket.get('raw_text') or '').lower()
+    if raw and ('duplicata' in raw or 'ticket réimprimé' in raw or 'document fiscal n°' in raw):
+        reasons.append('possible_duplicate')
+
+    if ticket.get('extraction_method') in ('claude_fallback', 'claude_truncation_recovery'):
+        reasons.append('claude_fallback_used')
+
+    judge_notes = (ticket.get('judge_note') or '').lower()
+    if any(kw in judge_notes for kw in ['manuscrit', 'non fiscal', 'non normalisé', 'illisible', 'indéterminable']):
+        reasons.append('handwritten_or_non_fiscal')
+
+    # Post-it : fournisseur = catégorie générique ET absence de détail TVA/HT
+    fournisseur_lower = fournisseur.lower()
+    postit_keywords = ['carburant', 'essence', 'voiture', 'taxi', 'note', 'divers', 'péage']
+    has_no_tva = not ticket.get('montant_tva') or float(ticket.get('montant_tva') or 0) == 0
+    has_no_ht = not ticket.get('montant_ht') or float(ticket.get('montant_ht') or 0) == 0
+    if any(kw in fournisseur_lower for kw in postit_keywords) and has_no_tva and has_no_ht:
+        reasons.append('postit_or_note')
+
+    return len(reasons) > 0, reasons
+
+
+def crop_ticket_image(pdf_bytes: bytes, page_num: int = 0,
+                      bbox=None, run_id: str = None, ticket_id: str = None) -> str:
+    """Rend un ticket en PNG depuis le PDF source.
+    bbox : [x_min, y_min, x_max, y_max] normalisé 0-1000 (format retourné par Gemini)
+           Si None ou invalide : fallback page entière.
+    """
+    import fitz
+    output_dir = REVIEW_BASE / (run_id or 'unknown')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_filename = f"{ticket_id or _uuid.uuid4().hex[:8]}.png"
+    output_path = output_dir / output_filename
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        page_idx = min(page_num, len(doc) - 1)
+        page = doc[page_idx]
+        page_rect = page.rect
+
+        clip = None
+        if bbox and len(bbox) == 4:
+            try:
+                x0, y0, x1, y1 = [float(v) for v in bbox]
+                # Rejeter si bbox couvre quasiment toute la page (inutile de cropper)
+                if not (x0 == 0 and y0 == 0 and x1 >= 999 and y1 >= 999):
+                    # Convertir 0-1000 → coordonnées PDF
+                    cx0 = (x0 / 1000) * page_rect.width
+                    cy0 = (y0 / 1000) * page_rect.height
+                    cx1 = (x1 / 1000) * page_rect.width
+                    cy1 = (y1 / 1000) * page_rect.height
+                    # Padding 2%
+                    pad_x = (cx1 - cx0) * 0.02
+                    pad_y = (cy1 - cy0) * 0.02
+                    clip = fitz.Rect(
+                        max(0, cx0 - pad_x),
+                        max(0, cy0 - pad_y),
+                        min(page_rect.width,  cx1 + pad_x),
+                        min(page_rect.height, cy1 + pad_y),
+                    )
+                    logger.info(f"  [Crop] {ticket_id} bbox {bbox} → clip {clip}")
+            except Exception as e:
+                logger.warning(f"  [Crop] bbox invalide pour {ticket_id}: {e}, fallback page entière")
+
+        if clip is None:
+            logger.warning(f"  [Crop] {ticket_id} sans bbox valide, fallback page entière")
+
+        mat = fitz.Matrix(200 / 72, 200 / 72)
+        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+        pix.save(str(output_path))
+        doc.close()
+        return f"review/{run_id}/{output_filename}"
+    except Exception as e:
+        logger.warning(f"[Review] Crop ticket {ticket_id}: {e}")
+        return None
+
+
+def save_review_queue(run_id: str, doubtful_tickets: list, rescan_tickets: list,
+                      good_tickets: list, rescan_pdf_path: str = None) -> None:
+    """Sauvegarde les 3 queues (good/doubtful/rescan) pour le run."""
+    queue_dir = REVIEW_BASE / run_id
+    queue_dir.mkdir(parents=True, exist_ok=True)
+
+    queue_data = {
+        'run_id': run_id,
+        'created_at': datetime.utcnow().isoformat(),
+        'tickets': doubtful_tickets,
+        'stats': {
+            'total': len(doubtful_tickets),
+            'pending': sum(1 for t in doubtful_tickets if t.get('review_status') == 'pending'),
+            'validated': 0,
+            'ignored': 0,
+            'duplicate': 0,
+        }
+    }
+    (queue_dir / 'queue.json').write_text(
+        json.dumps(queue_data, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+
+    auto_data = {'run_id': run_id, 'tickets': good_tickets}
+    (queue_dir / 'auto_validated.json').write_text(
+        json.dumps(auto_data, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+
+    rescan_data = {
+        'run_id': run_id,
+        'tickets': rescan_tickets,
+        'rescan_pdf': rescan_pdf_path,
+    }
+    (queue_dir / 'rescan.json').write_text(
+        json.dumps(rescan_data, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+
+
+def load_review_queue(run_id: str) -> dict:
+    queue_path = REVIEW_BASE / run_id / 'queue.json'
+    if not queue_path.exists():
+        return None
+    return json.loads(queue_path.read_text(encoding='utf-8'))
+
+
+def load_auto_validated(run_id: str) -> list:
+    path = REVIEW_BASE / run_id / 'auto_validated.json'
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding='utf-8')).get('tickets', [])
+
+
+def _save_queue_data(run_id: str, queue: dict) -> None:
+    path = REVIEW_BASE / run_id / 'queue.json'
+    path.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def update_ticket_in_queue(run_id: str, ticket_id: str, updates: dict) -> bool:
+    queue = load_review_queue(run_id)
+    if not queue:
+        return False
+    found = False
+    for ticket in queue['tickets']:
+        if ticket.get('ticket_id') == ticket_id:
+            ticket.update(updates)
+            ticket['updated_at'] = datetime.utcnow().isoformat()
+            found = True
+            break
+    if not found:
+        return False
+    queue['stats']['pending'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'pending')
+    queue['stats']['validated'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'validated')
+    queue['stats']['ignored'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'ignored')
+    queue['stats']['duplicate'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'duplicate')
+    _save_queue_data(run_id, queue)
+    return True
+
+
+# ===================================================================
+# SCAN QUALITY — helpers pour classification 3 niveaux
+# ===================================================================
+
+_VALID_SCAN_QUALITY = {'good', 'doubtful', 'unreadable'}
+
+
+def fallback_scan_quality(ticket: dict) -> str:
+    """Déduit scan_quality depuis les champs du ticket quand Gemini ne l'a pas fourni."""
+    confidence = float(ticket.get('confidence', 1.0) or 1.0)
+    raison = (ticket.get('raison_rejet') or '').lower()
+    montant = float(ticket.get('montant_ttc', 0) or 0)
+
+    # Cas clairement inutilisables
+    if montant == 0 and confidence < 0.4:
+        return 'unreadable'
+    if any(kw in raison for kw in ['illisible', 'coupé', 'flou', 'manquant', 'inutilisable']):
+        return 'unreadable'
+
+    # Cas douteux
+    if confidence < 0.65:
+        return 'doubtful'
+    if not ticket.get('date') or not ticket.get('fournisseur'):
+        return 'doubtful'
+    judge = (ticket.get('judge_note') or '').lower()
+    if any(kw in judge for kw in ['douteux', 'ambigu', 'incertain', 'partiel', 'manuscrit']):
+        return 'doubtful'
+
+    return 'good'
+
+
+def classify_ticket_for_queue(ticket: dict) -> str:
+    """Retourne 'good' | 'doubtful' | 'unreadable' à partir du champ scan_quality Gemini.
+    Applique fallback si le champ est absent ou invalide."""
+    sq = (ticket.get('scan_quality') or '').lower().strip()
+    if sq in _VALID_SCAN_QUALITY:
+        return sq
+    return fallback_scan_quality(ticket)
+
+
+def generate_rescan_pdf(run_id: str, rescan_tickets: list, pdf_bytes_per_page: dict) -> str:
+    """Génère un PDF regroupant les pages des tickets 'unreadable', à sauver dans static/review/{run_id}/rescan.pdf.
+    pdf_bytes_per_page: {page_num: bytes} — bytes PyMuPDF de chaque page source.
+    Retourne le chemin relatif 'review/{run_id}/rescan.pdf' ou None si échec."""
+    try:
+        import fitz
+        output_dir = REVIEW_BASE / run_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / 'rescan.pdf'
+
+        pages_seen = set()
+        out_doc = fitz.open()
+        for ticket in rescan_tickets:
+            page_key = ticket.get('source_page', '')
+            if page_key in pages_seen:
+                continue
+            pages_seen.add(page_key)
+            raw = pdf_bytes_per_page.get(page_key)
+            if not raw:
+                continue
+            src_doc = fitz.open(stream=raw, filetype='pdf')
+            out_doc.insert_pdf(src_doc, from_page=0, to_page=0)
+            src_doc.close()
+
+        if len(out_doc) == 0:
+            out_doc.close()
+            return None
+        out_doc.save(str(output_path))
+        out_doc.close()
+        return f"review/{run_id}/rescan.pdf"
+    except Exception as e:
+        logger.warning(f"[Rescan PDF] Génération échouée run {run_id}: {e}")
+        return None
+
+
+# ===================================================================
 # UTILITAIRES PDF
 # ===================================================================
 
@@ -395,6 +812,10 @@ def call_google_docai(pdf_bytes):
 
     if response.status_code == 200:
         raw_text = response.json().get('document', {}).get('text', '').strip()
+        try:
+            track_docai_page()
+        except Exception as e:
+            logger.warning(f"[Cost] track_docai_page: {e}")
         return {'full_text': raw_text}
 
     raise Exception(f"Google DocAI HTTP {response.status_code} - {response.text[:300]}")
@@ -507,7 +928,16 @@ def call_gemini_vision(png_b64, extra_prompt=None):
     )
 
     if response.status_code == 200:
-        parts = response.json()['candidates'][0]['content']['parts']
+        rj = response.json()
+        try:
+            um = rj.get('usageMetadata', {})
+            track_gemini_usage(
+                input_tokens=um.get('promptTokenCount', 0),
+                output_tokens=um.get('candidatesTokenCount', 0),
+            )
+        except Exception as e:
+            logger.warning(f"[Cost] Gemini vision usage: {e}")
+        parts = rj['candidates'][0]['content']['parts']
         for part in parts:
             if part.get('thought'):
                 continue
@@ -619,7 +1049,17 @@ def call_claude_vision_primary(png_bytes, extra_prompt=None):
     )
 
     if response.status_code == 200:
-        content_blocks = response.json()['content']
+        rj = response.json()
+        try:
+            usage = rj.get('usage', {})
+            track_claude_usage(
+                input_tokens=usage.get('input_tokens', 0),
+                output_tokens=usage.get('output_tokens', 0),
+                role="fallback"
+            )
+        except Exception as e:
+            logger.warning(f"[Cost] Claude primary usage: {e}")
+        content_blocks = rj['content']
         for block in reversed(content_blocks):
             if block.get('type') == 'text':
                 return block['text']
@@ -681,7 +1121,17 @@ def call_claude_vision_judge(png_bytes, extraction_gemini):
     )
 
     if response.status_code == 200:
-        content_blocks = response.json()['content']
+        rj = response.json()
+        try:
+            usage = rj.get('usage', {})
+            track_claude_usage(
+                input_tokens=usage.get('input_tokens', 0),
+                output_tokens=usage.get('output_tokens', 0),
+                role="judge"
+            )
+        except Exception as e:
+            logger.warning(f"[Cost] Claude judge usage: {e}")
+        content_blocks = rj['content']
         for block in reversed(content_blocks):
             if block.get('type') == 'text':
                 return block['text']
@@ -731,7 +1181,16 @@ def call_gemini_vision_judge(png_b64, extraction_claude):
     )
 
     if response.status_code == 200:
-        parts = response.json()['candidates'][0]['content']['parts']
+        rj = response.json()
+        try:
+            um = rj.get('usageMetadata', {})
+            track_gemini_usage(
+                input_tokens=um.get('promptTokenCount', 0),
+                output_tokens=um.get('candidatesTokenCount', 0),
+            )
+        except Exception as e:
+            logger.warning(f"[Cost] Gemini judge usage: {e}")
+        parts = rj['candidates'][0]['content']['parts']
         for part in parts:
             if part.get('thought'):
                 continue
@@ -898,7 +1357,17 @@ def extract_tickets_claude_fallback(png_bytes, filename):
             logger.error(f"  [Fallback Claude] HTTP {response.status_code}")
             return []
 
-        content_blocks = response.json()['content']
+        rj = response.json()
+        try:
+            usage = rj.get('usage', {})
+            track_claude_usage(
+                input_tokens=usage.get('input_tokens', 0),
+                output_tokens=usage.get('output_tokens', 0),
+                role="fallback"
+            )
+        except Exception as e:
+            logger.warning(f"[Cost] Claude fallback usage: {e}")
+        content_blocks = rj['content']
         raw = next((b['text'] for b in reversed(content_blocks) if b.get('type') == 'text'), '')
         parsed = clean_json_response(raw, filename)
         tickets = parsed.get('tickets', [])
@@ -1121,15 +1590,26 @@ def filter_tickets_fiables(tickets, ocr_text, page_filename=''):
     for t in tickets:
         raison = None
 
-        # Critere 1 : montant_ttc manquant
+        # Critere 1 : montant_ttc manquant → NE PLUS REJETER, forcer unreadable
         ttc = float(t.get('montant_ttc', 0) or 0)
         if ttc == 0:
-            raison = "Montant TTC illisible ou absent"
+            fournisseur_log = t.get('fournisseur', '?')
+            logger.info(
+                f"  [Filtre] {fournisseur_log} TTC=0 → conservé, "
+                f"scan_quality forcé 'unreadable' (pas de rejet)"
+            )
+            t = dict(t)
+            if t.get('scan_quality') != 'unreadable':
+                t['scan_quality'] = 'unreadable'
+                t['scan_quality_reason'] = (
+                    t.get('scan_quality_reason') or 'Montant TTC absent ou illisible'
+                )
+            existing = t.get('raison_rejet', '') or ''
+            note = "Montant TTC illisible ou absent"
+            t['raison_rejet'] = (existing + " | " + note).strip(' |') if existing else note
 
-        # Critere 2 : date manquante ou mauvais format
-        elif not re.match(r'^\d{2}/\d{2}/\d{4}$', str(t.get('date', ''))):
-            # Récupération conditionnelle pour les péages (VINCI, Sanef, APRR, etc.)
-            # qui n'impriment pas toujours la date de façon lisible
+        # Critere 2 : date manquante ou mauvais format → NE PLUS REJETER sauf péage récupérable
+        if not re.match(r'^\d{2}/\d{2}/\d{4}$', str(t.get('date', ''))):
             fournisseur_lower = str(t.get('fournisseur', '')).lower()
             is_peage = any(kw in fournisseur_lower for kw in PEAGE_KEYWORDS)
             if is_peage and ttc > 0:
@@ -1145,11 +1625,24 @@ def filter_tickets_fiables(tickets, ocr_text, page_filename=''):
                         f"  [Filtre] Péage sans date récupéré : "
                         f"{t.get('fournisseur','?')} {ttc}€ → date inférée {date_fallback} (conf 0.6)"
                     )
-                    # Pas de raison de rejet — on continue avec le ticket corrigé
                 else:
-                    raison = "Date manquante ou illisible"
+                    logger.info(
+                        f"  [Filtre] {t.get('fournisseur','?')} date manquante → conservé, "
+                        f"scan_quality décidera de la queue"
+                    )
+                    t = dict(t)
+                    existing = t.get('raison_rejet', '') or ''
+                    note = "Date manquante ou illisible"
+                    t['raison_rejet'] = (existing + " | " + note).strip(' |') if existing else note
             else:
-                raison = "Date manquante ou illisible"
+                logger.info(
+                    f"  [Filtre] {t.get('fournisseur','?')} date manquante → conservé, "
+                    f"scan_quality décidera de la queue"
+                )
+                t = dict(t)
+                existing = t.get('raison_rejet', '') or ''
+                note = "Date manquante ou illisible"
+                t['raison_rejet'] = (existing + " | " + note).strip(' |') if existing else note
 
         # Critere 2b : dépense potentiellement personnelle → noter mais ne pas rejeter
         if raison is None:
@@ -1237,11 +1730,19 @@ def filter_tickets_fiables(tickets, ocr_text, page_filename=''):
                     f"confidence {t['confidence']}"
                 )
 
-        # Critere 3 : confidence faible (après tous les ajustements)
+        # Critere 3 : confidence faible — ne plus rejeter, scan_quality prend le relai
+        # Les tickets à confidence basse vont en 'doubtful' ou 'unreadable' via classify_ticket_for_queue()
         if raison is None:
             conf = float(t.get('confidence', 1.0) or 1.0)
             if conf <= 0.50:
-                raison = f"Lecture trop incertaine (confidence {conf:.0%})"
+                logger.info(
+                    f"  [Filtre] {t.get('fournisseur','?')} {t.get('montant_ttc','?')} "
+                    f"confidence={conf:.0%} → conservé, scan_quality décidera de la queue"
+                )
+                t = dict(t)
+                existing = t.get('raison_rejet', '') or ''
+                note = f"Lecture incertaine (confidence {conf:.0%})"
+                t['raison_rejet'] = (existing + " | " + note).strip(" |") if existing else note
             elif conf <= 0.70:
                 t = dict(t)
                 existing = t.get('raison_rejet', '') or ''
@@ -1891,6 +2392,24 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
     if ocr_text:
         tickets = cross_validate_against_ocr(tickets, ocr_text)
 
+    # 6b. Garantir scan_quality sur chaque ticket (fallback si absent/invalide)
+    for t in tickets:
+        sq = (t.get('scan_quality') or '').lower().strip()
+        if sq not in _VALID_SCAN_QUALITY:
+            t['scan_quality'] = fallback_scan_quality(t)
+            t.setdefault('scan_quality_reason', 'Qualité déduite (champ absent de l\'extraction)')
+            logger.warning(
+                f"  [scan_quality] Manquant pour {t.get('fournisseur','?')}, "
+                f"fallback → {t['scan_quality']}"
+            )
+        else:
+            logger.info(
+                f"  [scan_quality] {t.get('fournisseur','?')} → {sq} "
+                f"({t.get('scan_quality_reason','')[:60]})"
+            )
+        if not t.get('bbox'):
+            logger.warning(f"  [scan_quality] {t.get('fournisseur','?')} sans bbox, crop = page entière")
+
     # 7. Sortie normalisée
     final = {
         'exploitable': True,
@@ -2457,6 +2976,11 @@ def dedup_global_cross_page(tickets_par_page):
 
 def process_tickets(files_data):
     """Traite une liste de tickets"""
+    run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    cost_tracking_start(run_id=run_id)
+    filenames_str = ", ".join(f['filename'] for f in files_data[:3])
+    track_run_metadata(filename=filenames_str)
+
     all_ecritures = []
     exploited_pdfs = []
     inexploitable_tickets = []
@@ -2606,7 +3130,14 @@ def process_tickets(files_data):
             for t in tickets_uniques_par_page[filename]:
                 t.pop('_source_page', None)
 
-    # ===== PASSE 3 : Génération des écritures par page (ordre original) =====
+    # ===== PASSE 3 : Classification 3 niveaux + génération des écritures =====
+    # Construire un index page_filename -> pdf_bytes pour les pages splittées
+    pdf_bytes_index = {sf['filename']: sf['bytes'] for sf in split_files}
+
+    all_good_tickets = []       # scan_quality == 'good' → Excel immédiat
+    all_review_tickets = []     # scan_quality == 'doubtful' → validation manuelle
+    all_rescan_tickets = []     # scan_quality == 'unreadable' → PDF rescan
+
     for filename, pdf_bytes, result in ordered_results:
         if filename not in tickets_uniques_par_page:
             continue  # déjà géré comme inexploitable en passe 1
@@ -2621,49 +3152,117 @@ def process_tickets(files_data):
 
         refs_a_verifier = refs_a_verifier_par_page.get(filename, set())
 
-        ecritures, nb_tickets, compta_alerts = generate_ecritures_from_tickets(
-            tickets_ok, start_ref=ticket_num
-        )
-        alerts.extend(compta_alerts)
-        logger.info(
-            f"  [Python] {len(ecritures)} ecritures generees pour "
-            f"{len(tickets_ok)} tickets ({filename})"
-        )
+        # Classification 3 niveaux pour chaque ticket
+        page_pdf_bytes = pdf_bytes_index.get(filename, pdf_bytes)
+        for t in tickets_ok:
+            if not t.get('ticket_id'):
+                t['ticket_id'] = _uuid.uuid4().hex[:12]
+            t['source_page'] = filename
+            sq = classify_ticket_for_queue(t)
+            t['scan_quality'] = sq
+            if sq == 'good':
+                t['review_status'] = 'auto_validated'
+                all_good_tickets.append((t, page_pdf_bytes))
+            elif sq == 'doubtful':
+                t['review_status'] = 'pending'
+                all_review_tickets.append((t, page_pdf_bytes))
+            else:  # unreadable
+                t['review_status'] = 'unreadable'
+                all_rescan_tickets.append((t, page_pdf_bytes))
 
-        # Vérification d'équilibre
-        par_ref = defaultdict(list)
-        for e in ecritures:
-            par_ref[e['reference']].append(e)
-        for ref, groupe in par_ref.items():
-            total_d = round(sum(e['debit'] for e in groupe), 2)
-            total_c = round(sum(e['credit'] for e in groupe), 2)
-            if abs(total_d - total_c) > 0.01:
-                alerts.append(
-                    f"{ref} ({filename}) : Desequilibre residuel "
-                    f"({total_d:.2f} != {total_c:.2f})"
-                )
-
-        refs_list = ', '.join(f'T{ticket_num + i}' for i in range(nb_tickets))
-        all_ecritures.extend(ecritures)
-
-        # Surlignage orange : tickets à confidence ≤ 0.70
-        for i, t_ok in enumerate(tickets_ok):
-            key = (
-                str(t_ok.get('fournisseur', '')),
-                str(t_ok.get('date', '')),
-                float(t_ok.get('montant_ttc', 0) or 0)
+        # Écritures uniquement pour les tickets good + doubtful (pas unreadable)
+        tickets_for_excel = [t for t in tickets_ok if t.get('scan_quality') != 'unreadable']
+        if tickets_for_excel:
+            ecritures, nb_tickets, compta_alerts = generate_ecritures_from_tickets(
+                tickets_for_excel, start_ref=ticket_num
             )
-            if key in refs_a_verifier:
-                low_confidence_refs.add(f'T{ticket_num + i}')
+            alerts.extend(compta_alerts)
+            logger.info(
+                f"  [Python] {len(ecritures)} ecritures generees pour "
+                f"{len(tickets_for_excel)} tickets ({filename}), "
+                f"{len(tickets_ok) - len(tickets_for_excel)} unreadable exclus"
+            )
+
+            # Vérification d'équilibre
+            par_ref = defaultdict(list)
+            for e in ecritures:
+                par_ref[e['reference']].append(e)
+            for ref, groupe in par_ref.items():
+                total_d = round(sum(e['debit'] for e in groupe), 2)
+                total_c = round(sum(e['credit'] for e in groupe), 2)
+                if abs(total_d - total_c) > 0.01:
+                    alerts.append(
+                        f"{ref} ({filename}) : Desequilibre residuel "
+                        f"({total_d:.2f} != {total_c:.2f})"
+                    )
+
+            refs_list = ', '.join(f'T{ticket_num + i}' for i in range(nb_tickets))
+            all_ecritures.extend(ecritures)
+
+            # Surlignage orange : tickets à confidence ≤ 0.70
+            for i, t_ok in enumerate(tickets_for_excel):
+                key = (
+                    str(t_ok.get('fournisseur', '')),
+                    str(t_ok.get('date', '')),
+                    float(t_ok.get('montant_ttc', 0) or 0)
+                )
+                if key in refs_a_verifier:
+                    low_confidence_refs.add(f'T{ticket_num + i}')
+
+            ticket_num += nb_tickets
+            results_detail.append({
+                'filename': filename, 'status': 'exploitable',
+                'reference': refs_list, 'ecritures': ecritures
+            })
+        else:
+            results_detail.append({
+                'filename': filename, 'status': 'inexploitable',
+                'raison': 'Tous les tickets unreadable'
+            })
 
         # TODO: reactiver le tampon S en production
         # stamped = stamp_pdf_with_s(pdf_bytes_par_page[filename])
-        exploited_pdfs.append(pdf_bytes_par_page[filename])
-        results_detail.append({
-            'filename': filename, 'status': 'exploitable',
-            'reference': refs_list, 'ecritures': ecritures
-        })
-        ticket_num += nb_tickets
+        if tickets_for_excel:
+            exploited_pdfs.append(pdf_bytes_par_page[filename])
+
+    # ===== PASSE 4 : Crop images + sauvegarder les 3 queues =====
+    def _crop_tickets_list(tickets_with_bytes):
+        result = []
+        for t, page_bytes in tickets_with_bytes:
+            t_copy = {k: v for k, v in t.items() if not k.startswith('_')}
+            try:
+                img_path = crop_ticket_image(
+                    pdf_bytes=page_bytes,
+                    page_num=0,
+                    bbox=t_copy.get('bbox'),
+                    run_id=run_id,
+                    ticket_id=t_copy['ticket_id']
+                )
+                t_copy['review_image_path'] = img_path
+            except Exception as e:
+                logger.warning(f"[Review] Crop failed {t_copy.get('ticket_id')}: {e}")
+                t_copy['review_image_path'] = None
+            result.append(t_copy)
+        return result
+
+    good_clean = _crop_tickets_list(all_good_tickets)
+    review_clean = _crop_tickets_list(all_review_tickets)
+    rescan_clean = _crop_tickets_list(all_rescan_tickets)
+
+    # PDF rescan (une page par ticket unreadable, sans doublons de pages)
+    rescan_pdf_path = None
+    if rescan_clean:
+        pdf_bytes_per_page = {t.get('source_page', ''): bts for t, bts in all_rescan_tickets}
+        rescan_pdf_path = generate_rescan_pdf(run_id, rescan_clean, pdf_bytes_per_page)
+
+    try:
+        save_review_queue(run_id, review_clean, rescan_clean, good_clean, rescan_pdf_path)
+        logger.info(
+            f"[Review] Queue sauvegardée — good:{len(good_clean)} "
+            f"review:{len(review_clean)} rescan:{len(rescan_clean)}"
+        )
+    except Exception as e:
+        logger.warning(f"[Review] save_review_queue: {e}")
 
     elapsed = _time.monotonic() - t_start
     logger.info(f"[Perf] Traitement terminé en {elapsed:.1f}s pour {total_pages} pages")
@@ -2701,7 +3300,15 @@ def process_tickets(files_data):
     logger.info(f"TOTAUX   : D={total_d} | C={total_c} | {'OK' if abs(total_d - total_c) < 0.01 else 'ERREUR'}")
     logger.info(f"{'='*50}")
 
+    track_run_metadata(pages_total=total_pages, tickets=len(all_ecritures))
+    cost_summary = cost_tracking_finalize()
+
+    good_count = len(good_clean) if good_clean else 0
+    review_count = len(review_clean) if review_clean else 0
+    rescan_count = len(rescan_clean) if rescan_clean else 0
+
     return {
+        'run_id': run_id,
         'output_files': output_files,
         'results_detail': results_detail,
         'summary': {
@@ -2711,6 +3318,18 @@ def process_tickets(files_data):
             'total_debit': total_d,
             'total_credit': total_c,
             'equilibre': abs(total_d - total_c) < 0.01
+        },
+        'review': {
+            'has_queue': review_count > 0 or rescan_count > 0,
+            'count': review_count,
+            'good_count': good_count,
+            'rescan_count': rescan_count,
+            'rescan_pdf': rescan_pdf_path,
+        },
+        'cost': {
+            'total_eur':      cost_summary.get('total_cost_eur', 0),
+            'per_ticket_eur': cost_summary.get('cost_per_ticket_eur', 0),
+            'per_page_eur':   cost_summary.get('cost_per_page_eur', 0),
         }
     }
 
@@ -2927,6 +3546,173 @@ def api_process():
         return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/review/<run_id>', methods=['GET'])
+@login_required
+def api_review_get(run_id):
+    queue = load_review_queue(run_id)
+    if not queue:
+        return jsonify({'error': 'Run not found'}), 404
+
+    # Enrichir avec les tickets good et rescan
+    good_tickets = load_auto_validated(run_id)
+
+    rescan_path = REVIEW_BASE / run_id / 'rescan.json'
+    rescan_data = {}
+    if rescan_path.exists():
+        try:
+            rescan_data = json.loads(rescan_path.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+
+    return jsonify({
+        **queue,
+        'good_tickets': good_tickets,
+        'rescan_tickets': rescan_data.get('tickets', []),
+        'rescan_pdf': rescan_data.get('rescan_pdf'),
+    })
+
+
+@app.route('/api/rescan-pdf/<run_id>', methods=['GET'])
+@login_required
+def api_rescan_pdf_download(run_id):
+    """Télécharger le PDF des tickets à rescanner pour ce run."""
+    pdf_path = REVIEW_BASE / run_id / 'rescan.pdf'
+    if not pdf_path.exists():
+        return jsonify({'error': 'PDF non disponible'}), 404
+    return send_file(
+        str(pdf_path),
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name=f'tickets_a_rescanner_{run_id[:12]}.pdf'
+    )
+
+
+@app.route('/api/review/<run_id>/<ticket_id>', methods=['PATCH'])
+@login_required
+def api_review_update(run_id, ticket_id):
+    data = request.get_json(silent=True) or {}
+    action = data.get('action')
+    fields = data.get('fields', {})
+
+    if action not in ('validate', 'ignore', 'duplicate'):
+        return jsonify({'error': 'Invalid action'}), 400
+
+    status_map = {'validate': 'validated', 'ignore': 'ignored', 'duplicate': 'duplicate'}
+    updates = {'review_status': status_map[action]}
+
+    if action == 'validate' and fields:
+        for key in ('date', 'fournisseur', 'montant_ttc', 'montant_ht', 'montant_tva',
+                    'mode_paiement', 'type'):
+            if key in fields:
+                updates[key] = fields[key]
+        updates['user_corrected'] = True
+
+    success = update_ticket_in_queue(run_id, ticket_id, updates)
+    if not success:
+        return jsonify({'error': 'Ticket not found'}), 404
+    return jsonify({'ok': True})
+
+
+@app.route('/api/review/<run_id>/ignore-duplicates', methods=['POST'])
+@login_required
+def api_review_ignore_duplicates(run_id):
+    queue = load_review_queue(run_id)
+    if not queue:
+        return jsonify({'error': 'Run not found'}), 404
+
+    count = 0
+    for ticket in queue['tickets']:
+        if (ticket.get('review_status') == 'pending'
+                and 'possible_duplicate' in ticket.get('review_reasons', [])):
+            ticket['review_status'] = 'ignored'
+            ticket['ignored_reason'] = 'batch_duplicate'
+            ticket['updated_at'] = datetime.utcnow().isoformat()
+            count += 1
+
+    queue['stats']['pending'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'pending')
+    queue['stats']['ignored'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'ignored')
+    _save_queue_data(run_id, queue)
+    return jsonify({'ok': True, 'ignored_count': count})
+
+
+@app.route('/api/review/<run_id>/finalize', methods=['POST'])
+@login_required
+def api_review_finalize(run_id):
+    queue = load_review_queue(run_id)
+    if not queue:
+        return jsonify({'error': 'Run not found'}), 404
+
+    # Tickets validés manuellement
+    manually_validated = [
+        t for t in queue['tickets'] if t.get('review_status') == 'validated'
+    ]
+
+    # Tickets auto-validés
+    auto_validated = load_auto_validated(run_id)
+
+    final_tickets = auto_validated + manually_validated
+
+    if not final_tickets:
+        return jsonify({'ok': True, 'message': 'Aucun ticket à exporter', 'tickets_included': 0})
+
+    ecritures, _, alerts = generate_ecritures_from_tickets(final_tickets, start_ref=1)
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    excel_bytes = create_excel(ecritures, alerts if alerts else None)
+    excel_name = f'Sage_review_{run_id[:15]}_{timestamp}.xlsx'
+    (OUTPUT_FOLDER / excel_name).write_bytes(excel_bytes)
+
+    ignored = sum(1 for t in queue['tickets']
+                  if t.get('review_status') in ('ignored', 'duplicate'))
+
+    return jsonify({
+        'ok': True,
+        'excel_name': excel_name,
+        'excel_url': f'/api/download/{excel_name}',
+        'tickets_included': len(final_tickets),
+        'tickets_excluded': ignored,
+    })
+
+
+@app.route('/api/costs', methods=['GET'])
+@login_required
+def get_cost_history():
+    """Historique des coûts par run."""
+    history_path = Path("/app/cost_history.jsonl")
+    if not history_path.exists():
+        return jsonify({'runs': [], 'totals': {}})
+
+    runs = []
+    try:
+        with history_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        runs.append(_json_cost.loads(line))
+                    except Exception:
+                        continue
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    totals = {}
+    if runs:
+        total_eur     = sum(r.get('total_cost_eur', 0) for r in runs)
+        total_pages   = sum(r.get('pages_total', 0) for r in runs)
+        total_tickets = sum(r.get('tickets_extraits', 0) for r in runs)
+        totals = {
+            'total_runs':             len(runs),
+            'total_cost_eur':         round(total_eur, 2),
+            'total_pages':            total_pages,
+            'total_tickets':          total_tickets,
+            'avg_cost_per_run_eur':   round(total_eur / len(runs), 4),
+            'avg_cost_per_ticket_eur':round(total_eur / max(total_tickets, 1), 4),
+        }
+
+    runs_sorted = sorted(runs, key=lambda r: r.get('timestamp', ''), reverse=True)[:100]
+    return jsonify({'runs': runs_sorted, 'totals': totals})
 
 
 @app.route('/api/download/<filename>')
