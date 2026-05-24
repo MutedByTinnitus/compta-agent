@@ -1,0 +1,442 @@
+{% extends "base.html" %}
+
+{% block title %}Enop.ai — Dashboard{% endblock %}
+
+{% block css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard-dark.css') }}">
+<style>
+    html, body { margin: 0; padding: 0; }
+    body.dark { background: #02181a !important; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="dk-shell">
+
+    <!-- ══ SIDEBAR ══════════════════════════════════════════ -->
+    <aside class="dk-sidebar">
+        <!-- Logo -->
+        <div class="dk-sidebar-logo">
+            <div class="dk-logo-name">Enop<span class="dk-logo-dot">.ai</span></div>
+            <div class="dk-logo-tag">Agent comptable</div>
+        </div>
+
+        <!-- Nav label -->
+        <div class="dk-nav-label">Navigation</div>
+
+        <!-- Nav items -->
+        <nav class="dk-nav">
+            <button class="dk-nav-item active" data-tab="upload" onclick="switchTab('upload')">
+                <span class="dk-nav-icon">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m0 0L8 7m4-4 4 4"/><path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/></svg>
+                </span>
+                <span>Saisie comptable</span>
+            </button>
+            <button class="dk-nav-item" data-tab="history" onclick="switchTab('history')">
+                <span class="dk-nav-icon">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>
+                </span>
+                <span>Historique</span>
+            </button>
+            <button class="dk-nav-item" data-tab="stats" onclick="switchTab('stats')">
+                <span class="dk-nav-icon">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                </span>
+                <span>Statistiques</span>
+            </button>
+            <button class="dk-nav-item" data-tab="corrections" onclick="switchTab('corrections')">
+                <span class="dk-nav-icon">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </span>
+                <span>Révision tickets</span>
+                <span class="dk-nav-badge" id="nav-badge-review" style="display:none"></span>
+            </button>
+            <button class="dk-nav-item" data-tab="settings" onclick="switchTab('settings')">
+                <span class="dk-nav-icon">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </span>
+                <span>Paramètres</span>
+            </button>
+        </nav>
+
+        <!-- Footer utilisateur -->
+        <div class="dk-sidebar-footer">
+            <div class="dk-user-row">
+                <span class="dk-username">Connecté</span>
+                <a href="/logout" class="dk-logout">Déco</a>
+            </div>
+            <button class="dk-theme-toggle" id="themeToggle" title="Changer le thème">
+                <span class="dk-theme-icon dk-theme-sun">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                </span>
+                <span class="dk-theme-icon dk-theme-moon">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                </span>
+                <span class="dk-theme-label" id="themeLabel">Dark</span>
+            </button>
+        </div>
+    </aside>
+
+    <!-- ══ MAIN ══════════════════════════════════════════════ -->
+    <main class="dk-main">
+
+        <!-- ─── TAB : Saisie comptable ─────────────────────── -->
+        <section class="dk-tab-section active" id="tab-upload">
+
+            <!-- Upload state -->
+            <div id="dk-upload-state">
+                <div class="dk-eyebrow">Enop.ai — Agent comptable</div>
+                <h1 class="dk-h1">Saisie comptable</h1>
+                <p class="dk-subtitle">Déposez vos justificatifs pour générer les écritures Sage.</p>
+
+                <!-- Dropzone -->
+                <div class="dk-dropzone" id="dropzone">
+                    <div class="dk-dz-icon">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 15V3m0 0L8 7m4-4 4 4"/>
+                            <path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>
+                        </svg>
+                    </div>
+                    <div class="dk-dz-text">Glissez vos fichiers ici</div>
+                    <div class="dk-dz-hint">PDF, ZIP jusqu'à 50 Mo — glissez plusieurs fichiers à la fois</div>
+                    <div class="dk-dz-badges">
+                        <span class="dk-badge-format">PDF</span>
+                        <span class="dk-badge-format">ZIP</span>
+                    </div>
+                    <input type="file" id="fileInput" multiple accept=".pdf,.zip">
+                </div>
+
+                <!-- File card -->
+                <div class="dk-file-card" id="fileCard" style="display:none">
+                    <div class="dk-file-card-header">
+                        <span class="dk-file-card-title">Fichiers sélectionnés (<span id="fileCount">0</span>)</span>
+                        <button class="dk-clear-btn" id="clearAllBtn">Effacer tout</button>
+                    </div>
+                    <div id="fileList"></div>
+                </div>
+
+                <!-- Process button -->
+                <button class="dk-btn-primary" id="processBtn" disabled>
+                    Analyser les justificatifs
+                </button>
+            </div>
+
+            <!-- Processing state -->
+            <div id="dk-processing-state" style="display:none">
+                <div class="dk-eyebrow">Analyse en cours</div>
+
+                <div class="dk-processing-card scanning" id="processingCard">
+                    <!-- Header -->
+                    <div class="dk-processing-header">
+                        <div>
+                            <div class="dk-processing-title">Analyse en cours</div>
+                            <div class="dk-processing-subtitle" id="progressFiles">—</div>
+                        </div>
+                        <div class="dk-timer" id="elapsedTimer">0 s</div>
+                    </div>
+
+                    <!-- Steps -->
+                    <div class="dk-steps" id="dkSteps">
+
+                        <div class="dk-step waiting" id="step-upload">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Chargement &amp; découpage</div>
+                                <div class="dk-step-detail" id="detail-upload">Validation des PDF, extraction des pages</div>
+                            </div>
+                            <div class="dk-step-time" id="time-upload"></div>
+                        </div>
+
+                        <div class="dk-step waiting" id="step-render">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Rendu haute résolution</div>
+                                <div class="dk-step-detail" id="detail-render">Conversion PDF → PNG 300 DPI</div>
+                            </div>
+                            <div class="dk-step-time" id="time-render"></div>
+                        </div>
+
+                        <div class="dk-step waiting" id="step-ai">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Extraction IA Vision</div>
+                                <div class="dk-step-detail" id="detail-ai">Lecture des tickets par le modèle</div>
+                            </div>
+                            <div class="dk-step-time" id="time-ai"></div>
+                        </div>
+
+                        <div class="dk-step waiting" id="step-filter">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Filtrage &amp; dédoublonnage</div>
+                                <div class="dk-step-detail" id="detail-filter">Validation qualité, détection des doublons</div>
+                            </div>
+                            <div class="dk-step-time" id="time-filter"></div>
+                        </div>
+
+                        <div class="dk-step waiting" id="step-export">
+                            <div class="dk-step-icon waiting">
+                                <svg class="dk-step-spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                <svg class="dk-step-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--dk-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                <svg class="dk-step-wait" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/></svg>
+                            </div>
+                            <div class="dk-step-body">
+                                <div class="dk-step-label">Génération Sage &amp; PDF</div>
+                                <div class="dk-step-detail" id="detail-export">Écritures comptables, fichiers de sortie</div>
+                            </div>
+                            <div class="dk-step-time" id="time-export"></div>
+                        </div>
+
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div class="dk-progress-wrap">
+                        <div class="dk-progress-track">
+                            <div class="dk-progress-bar" id="progressBar"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results state -->
+            <div id="dk-results-state" style="display:none">
+                <div class="dk-eyebrow">Traitement terminé</div>
+                <h1 class="dk-h1">Résultats</h1>
+                <p class="dk-subtitle" id="resultSummary"></p>
+
+                <!-- Stats -->
+                <div class="dk-stats-grid" id="stats"></div>
+
+                <!-- Fichiers générés -->
+                <div class="dk-section-label">Fichiers générés</div>
+                <div class="dk-files-card" id="downloads"></div>
+
+                <!-- Tableau -->
+                <div class="dk-section-label">Détail des écritures</div>
+                <div class="dk-table-card">
+                    <table class="dk-table">
+                        <thead>
+                            <tr>
+                                <th>Fichier</th>
+                                <th>Statut</th>
+                                <th>Réf</th>
+                                <th>Libellé</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detailBody"></tbody>
+                    </table>
+                </div>
+
+                <!-- Retour -->
+                <button class="dk-back-btn" onclick="resetAll()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 12H5m0 0 7 7m-7-7 7-7"/>
+                    </svg>
+                    Nouveau traitement
+                </button>
+            </div>
+
+        </section>
+
+        <!-- ─── TAB : Historique ───────────────────────────── -->
+        <section class="dk-tab-section" id="tab-history">
+            <div class="dk-eyebrow">Historique</div>
+            <h1 class="dk-h1">Traitements passés</h1>
+            <p class="dk-subtitle">Vos traitements précédents.</p>
+            <div class="dk-placeholder">
+                Historique disponible prochainement
+            </div>
+        </section>
+
+        <!-- ─── TAB : Statistiques ────────────────────────── -->
+        <section class="dk-tab-section" id="tab-stats">
+            <div class="dk-eyebrow">Analytiques</div>
+            <h1 class="dk-h1">Statistiques</h1>
+            <p class="dk-subtitle">Vue d'ensemble de vos données comptables.</p>
+            <div class="dk-placeholder">
+                Statistiques disponibles prochainement
+            </div>
+        </section>
+
+        <!-- ─── TAB : Révision tickets ──────────────────────── -->
+        <section class="dk-tab-section" id="tab-corrections">
+
+            <!-- État vide -->
+            <div id="review-empty">
+                <div class="dk-eyebrow">Révision</div>
+                <h1 class="dk-h1">Révision des tickets</h1>
+                <p class="dk-subtitle">Aucune analyse en cours.</p>
+                <div class="dk-placeholder">Lancez une analyse pour voir apparaître les tickets ici.</div>
+            </div>
+
+            <!-- Queue active -->
+            <div id="review-queue" style="display:none">
+                <div class="dk-eyebrow">Révision tickets</div>
+                <h1 class="dk-h1">Révision des tickets</h1>
+
+                <!-- Sous-onglets -->
+                <div class="rv-subtabs">
+                    <button class="rv-subtab active" data-subtab="all" onclick="switchReviewSubtab('all')">
+                        Tous les tickets
+                        <span class="rv-subtab-badge" id="badge-all">0</span>
+                    </button>
+                    <button class="rv-subtab" data-subtab="doubtful" onclick="switchReviewSubtab('doubtful')">
+                        À valider
+                        <span class="rv-subtab-badge rv-subtab-badge--amber" id="badge-doubtful">0</span>
+                    </button>
+                    <button class="rv-subtab" data-subtab="rescan" onclick="switchReviewSubtab('rescan')">
+                        À rescanner
+                        <span class="rv-subtab-badge rv-subtab-badge--red" id="badge-rescan">0</span>
+                    </button>
+                </div>
+
+                <!-- ── Sous-onglet Tous les tickets ── -->
+                <div class="rv-subpanel" id="subpanel-all">
+                    <div class="rv-ticket-grid" id="rv-all-grid"></div>
+                </div>
+
+                <!-- ── Sous-onglet À valider (doubtful) ── -->
+                <div class="rv-subpanel" id="subpanel-doubtful" style="display:none">
+                    <div class="rv-batch-actions">
+                        <button id="btn-ignore-duplicates" class="dk-btn-outline">
+                            Ignorer tous les duplicatas
+                        </button>
+                        <button id="btn-finalize" class="dk-btn-primary" disabled>
+                            Finaliser et générer l'Excel
+                        </button>
+                    </div>
+
+                    <div class="rv-grid">
+                        <!-- Liste gauche -->
+                        <div class="rv-list" id="rv-list"></div>
+
+                        <!-- Détail droite -->
+                        <div class="rv-detail" id="rv-detail">
+                            <div class="rv-image-wrap">
+                                <img id="rv-image" src="" alt="Ticket" />
+                            </div>
+
+                            <div class="rv-fields">
+                                <div class="dk-eyebrow" id="rv-reasons" style="margin-bottom:16px"></div>
+
+                                <div class="rv-field-group">
+                                    <label>Date</label>
+                                    <input type="text" id="rv-date" placeholder="JJ/MM/AAAA" />
+                                </div>
+                                <div class="rv-field-group">
+                                    <label>Fournisseur</label>
+                                    <input type="text" id="rv-fournisseur" />
+                                </div>
+                                <div class="rv-field-row">
+                                    <div class="rv-field-group">
+                                        <label>TTC (€)</label>
+                                        <input type="number" step="0.01" id="rv-ttc" />
+                                    </div>
+                                    <div class="rv-field-group">
+                                        <label>HT (€)</label>
+                                        <input type="number" step="0.01" id="rv-ht" />
+                                    </div>
+                                    <div class="rv-field-group">
+                                        <label>TVA (€)</label>
+                                        <input type="number" step="0.01" id="rv-tva" />
+                                    </div>
+                                </div>
+                                <div class="rv-field-group">
+                                    <label>Mode de paiement</label>
+                                    <select id="rv-mode">
+                                        <option value="CB">CB</option>
+                                        <option value="ESPECES">Espèces</option>
+                                        <option value="CHEQUE">Chèque</option>
+                                        <option value="VIREMENT">Virement</option>
+                                    </select>
+                                </div>
+                                <div class="rv-field-group">
+                                    <label>Catégorie</label>
+                                    <input type="text" id="rv-categorie" placeholder="carburant, peage, repas…" />
+                                </div>
+
+                                <div class="rv-actions">
+                                    <button id="btn-rv-validate" class="dk-btn-primary">Valider</button>
+                                    <button id="btn-rv-ignore" class="dk-btn-outline">Ignorer</button>
+                                    <button id="btn-rv-duplicate" class="dk-btn-outline">Duplicata</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Sous-onglet À rescanner ── -->
+                <div class="rv-subpanel" id="subpanel-rescan" style="display:none">
+                    <div class="rv-notice-banner rv-notice-banner--red" id="rescan-notice">
+                        <strong>Ces tickets sont illisibles.</strong>
+                        Téléchargez le PDF pour les rescanner manuellement.
+                    </div>
+                    <div class="rv-rescan-actions">
+                        <a id="btn-download-rescan" class="dk-btn-primary" href="#" download>
+                            Télécharger le PDF à rescanner
+                        </a>
+                    </div>
+                    <div class="rv-ticket-grid" id="rv-rescan-grid"></div>
+                </div>
+
+            </div>
+
+        </section>
+
+        <!-- ─── TAB : Paramètres ──────────────────────────── -->
+        <section class="dk-tab-section" id="tab-settings">
+            <div class="dk-eyebrow">Configuration</div>
+            <h1 class="dk-h1">Paramètres</h1>
+            <p class="dk-subtitle">Configuration de votre agent comptable.</p>
+            <div class="dk-placeholder">
+                Paramètres disponibles prochainement
+            </div>
+        </section>
+
+    </main>
+</div>
+
+<!-- Lightbox zoom tickets -->
+<div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Image ticket agrandie">
+    <button id="lightbox-close" class="lightbox-close" aria-label="Fermer">&times;</button>
+    <img id="lightbox-img" src="" alt="Ticket agrandi" />
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>const CSRF_TOKEN = '{{ csrf_token }}';</script>
+<script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+<script>
+(function() {
+    const btn = document.getElementById('themeToggle');
+    const label = document.getElementById('themeLabel');
+    const saved = localStorage.getItem('enop-theme');
+    if (saved === 'dark') {
+        document.body.classList.add('dark');
+        label.textContent = 'Light';
+    }
+    btn.addEventListener('click', function() {
+        const isDark = document.body.classList.toggle('dark');
+        label.textContent = isDark ? 'Light' : 'Dark';
+        localStorage.setItem('enop-theme', isDark ? 'dark' : 'light');
+    });
+})();
+</script>
+{% endblock %}

@@ -32,6 +32,8 @@ let selectedFiles    = [];
 let timerInterval    = null;
 let progressInterval = null;
 let startTime        = null;
+let pollInterval     = null;
+let currentJobId     = null;
 
 // ── Drag & Drop ────────────────────────────────────────────────────────────────
 ['dragenter', 'dragover'].forEach(evt => {
@@ -265,7 +267,62 @@ function showProcessing() {
     startProgress();
 }
 
-// ── Process ────────────────────────────────────────────────────────────────────
+// ── Process (async : job_id + polling) ────────────────────────────────────────
+const STEP_INDEX = { upload: 0, render: 1, ai: 2, filter: 3, export: 4 };
+
+function applyBackendProgress(job) {
+    // Step → avance les jalons UI
+    const idx = STEP_INDEX[job.step];
+    if (typeof idx === 'number') advanceToStep(idx);
+
+    // Pct → barre (max 99 tant que pas done, 100 sinon)
+    if (typeof job.progress === 'number') {
+        const pct = job.status === 'done' ? 100 : Math.min(job.progress, 99);
+        progressBar.style.width = pct + '%';
+    }
+
+    // Detail texte (optionnel)
+    if (job.detail) {
+        const row = document.getElementById(STEP_IDS[idx]);
+        if (row) {
+            const detEl = row.querySelector('.dk-step-detail');
+            if (detEl) detEl.textContent = job.detail;
+        }
+    }
+}
+
+function stopPolling() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    currentJobId = null;
+}
+
+async function pollJob(jobId) {
+    try {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        if (r.status === 401) { stopPolling(); window.location.href = '/login'; return; }
+        if (!r.ok) return; // 404 transitoire au premier tick → on retentera
+        const job = await r.json();
+
+        applyBackendProgress(job);
+
+        if (job.status === 'done') {
+            stopPolling();
+            stopProgress(true);
+            await new Promise(res => setTimeout(res, 400));
+            const data = job.result || {};
+            if (data.run_id) sessionStorage.setItem('lastRunId', data.run_id);
+            showResults(data);
+        } else if (job.status === 'failed') {
+            stopPolling();
+            stopProgress(false);
+            alert('Erreur : ' + (job.error || 'echec du traitement'));
+            resetAll();
+        }
+    } catch (e) {
+        // erreur reseau ponctuelle : on retentera au prochain tick
+    }
+}
+
 processBtn.addEventListener('click', async () => {
     if (selectedFiles.length === 0) return;
 
@@ -287,20 +344,24 @@ processBtn.addEventListener('click', async () => {
         }
 
         const data = await resp.json();
-        stopProgress(true);
 
-        // Laisser la barre à 100% une demi-seconde avant le switch
-        await new Promise(r => setTimeout(r, 500));
-
-        if (data.error) {
-            alert('Erreur : ' + data.error);
+        if (!resp.ok || data.error) {
+            stopProgress(false);
+            alert('Erreur : ' + (data.error || `HTTP ${resp.status}`));
             resetAll();
             return;
         }
 
-        if (data.run_id) sessionStorage.setItem('lastRunId', data.run_id);
+        if (!data.job_id) {
+            stopProgress(false);
+            alert('Reponse serveur invalide (job_id manquant)');
+            resetAll();
+            return;
+        }
 
-        showResults(data);
+        currentJobId = data.job_id;
+        pollJob(currentJobId); // premier tick immediat
+        pollInterval = setInterval(() => pollJob(currentJobId), 2000);
 
     } catch (err) {
         stopProgress(false);
@@ -711,6 +772,7 @@ document.getElementById('btn-finalize').addEventListener('click', async () => {
 
 // ── Reset ──────────────────────────────────────────────────────────────────────
 function resetAll() {
+    stopPolling();
     stopProgress(false);
     selectedFiles = [];
     renderFiles();

@@ -485,12 +485,14 @@ def security_headers(response):
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
+    # CSP : autorise React + Babel standalone depuis unpkg.com pour le nouveau front
+    # (Babel standalone a besoin de 'unsafe-eval' pour compiler le JSX au runtime)
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
-        "img-src 'self' data:; "
+        "img-src 'self' data: blob:; "
         "connect-src 'self'"
     )
     # Pas de cache sur les fichiers sensibles
@@ -507,6 +509,59 @@ import uuid as _uuid
 
 REVIEW_BASE = Path("static/review")
 REVIEW_BASE.mkdir(parents=True, exist_ok=True)
+
+
+# ===================================================================
+# JOB STORE (traitement asynchrone /api/process)
+# ===================================================================
+
+JOBS_DIR = Path("jobs")
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+_JOBS_LOCK = threading.Lock()
+
+JOB_STEPS = ["upload", "render", "ai", "filter", "export"]
+JOB_STEP_PCT = {"upload": 5, "render": 15, "ai": 30, "filter": 85, "export": 95}
+
+
+def _job_path(job_id: str) -> Path:
+    return JOBS_DIR / f"{job_id}.json"
+
+
+def save_job(job_id: str, data: dict) -> None:
+    """Ecriture atomique pour eviter les reads partiels pendant le polling."""
+    path = _job_path(job_id)
+    tmp = path.with_suffix(".json.tmp")
+    payload = json.dumps(data, ensure_ascii=False)
+    with _JOBS_LOCK:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+
+
+def load_job(job_id: str) -> dict | None:
+    path = _job_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def update_job(job_id: str, **fields) -> None:
+    data = load_job(job_id) or {}
+    data.update(fields)
+    data["updated_at"] = datetime.utcnow().isoformat()
+    save_job(job_id, data)
+
+
+def cleanup_old_jobs(max_age_hours: int = 24) -> None:
+    cutoff = time.time() - max_age_hours * 3600
+    for p in JOBS_DIR.glob("*.json"):
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+        except Exception:
+            pass
 
 
 def classify_ticket_for_review(ticket: dict) -> tuple:
@@ -2974,8 +3029,22 @@ def dedup_global_cross_page(tickets_par_page):
     return tickets_uniques, tickets_doublons
 
 
-def process_tickets(files_data):
-    """Traite une liste de tickets"""
+def process_tickets(files_data, progress_cb=None):
+    """Traite une liste de tickets.
+
+    progress_cb(step: str, pct: int, detail: str = "") -> None
+        Hook optionnel appele aux jalons (upload, render, ai, filter, export).
+        Si None, comportement identique a avant.
+    """
+    def _p(step, detail=""):
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(step, JOB_STEP_PCT.get(step, 0), detail)
+        except Exception:
+            pass
+
+    _p("upload", "Validation des PDF")
     run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     cost_tracking_start(run_id=run_id)
     filenames_str = ", ".join(f['filename'] for f in files_data[:3])
@@ -3009,11 +3078,14 @@ def process_tickets(files_data):
     logger.info(f"Traitement de {total_pages} page(s)")
     logger.info(f"{'='*50}")
 
+    _p("render", f"{total_pages} page(s) prete(s)")
+
     # Traitement parallèle des pages (max 4 workers)
     import time as _time
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     t_start = _time.monotonic()
+    _p("ai", f"Extraction IA sur {total_pages} page(s)")
 
     def process_one(idx, file_info):
         filename = file_info['filename']
@@ -3024,6 +3096,7 @@ def process_tickets(files_data):
 
     # Lancer toutes les pages en parallèle et collecter dans l'ordre original
     ordered_results = [None] * total_pages
+    done_count = 0
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(process_one, idx, file_info): idx
@@ -3032,6 +3105,13 @@ def process_tickets(files_data):
         for future in as_completed(futures):
             idx, filename, pdf_bytes, result = future.result()
             ordered_results[idx] = (filename, pdf_bytes, result)
+            done_count += 1
+            if progress_cb is not None and total_pages > 0:
+                pct = 30 + int(50 * done_count / total_pages)
+                try:
+                    progress_cb("ai", pct, f"{done_count}/{total_pages} page(s) extraite(s)")
+                except Exception:
+                    pass
 
     # ===== PASSE 1 : Filtrage qualité intra-page =====
     # Collecter tous les tickets validés par page, sans encore générer les écritures.
@@ -3098,6 +3178,8 @@ def process_tickets(files_data):
         tickets_par_page[filename] = tickets_ok
         refs_a_verifier_par_page[filename] = refs_a_verifier
         pdf_bytes_par_page[filename] = pdf_bytes
+
+    _p("filter", "Dedup & controle qualite")
 
     # ===== PASSE 2 : Dédup globale cross-page =====
     tickets_uniques_par_page = {}  # {filename: [tickets_uniques]}
@@ -3266,6 +3348,8 @@ def process_tickets(files_data):
 
     elapsed = _time.monotonic() - t_start
     logger.info(f"[Perf] Traitement terminé en {elapsed:.1f}s pour {total_pages} pages")
+
+    _p("export", "Generation Sage & PDF")
 
     # Generation fichiers (supprimes automatiquement apres FILE_RETENTION_MINUTES)
     output_files = {}
@@ -3456,9 +3540,20 @@ def logout():
 
 
 @app.route('/')
-@login_required
 def index():
-    return render_template('index.html', csrf_token=generate_csrf_token())
+    # TODO: réactiver @login_required une fois le composant Auth React intégré
+    # En attendant : auto-session pour que les /api/... fonctionnent depuis le nouveau front
+    if not session.get('authenticated'):
+        session['authenticated'] = True
+        session['login_time'] = time.time()
+        session.permanent = True
+    return render_template('app.html', csrf_token=generate_csrf_token())
+
+
+@app.route('/legacy')
+@login_required
+def index_legacy():
+    return render_template('_legacy/index.html', csrf_token=generate_csrf_token())
 
 
 @app.route('/api/process', methods=['POST'])
@@ -3535,17 +3630,49 @@ def api_process():
             'limite': MAX_PAGES_PER_BATCH
         }), 413
 
-    try:
-        results = process_tickets(files_data)
+    # ----- Mode asynchrone : on cree un job, on lance un thread, on retourne le job_id -----
+    job_id = _uuid.uuid4().hex
+    filenames = [fd['filename'] for fd in files_data]
+    save_job(job_id, {
+        'job_id': job_id,
+        'status': 'pending',
+        'progress': 0,
+        'step': 'upload',
+        'detail': 'En attente du worker',
+        'filenames': filenames,
+        'created_at': datetime.utcnow().isoformat(),
+    })
 
-        # Nettoyage immediat des donnees en memoire
-        for fd in files_data:
-            fd['bytes'] = None
-        files_data.clear()
+    def _progress_cb(step, pct, detail=""):
+        update_job(job_id, status='running', step=step, progress=pct, detail=detail)
 
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    def _run_job(jid, fdata):
+        try:
+            results = process_tickets(fdata, progress_cb=_progress_cb)
+            for fd in fdata:
+                fd['bytes'] = None
+            fdata.clear()
+            update_job(jid, status='done', progress=100, step='export',
+                       detail='Termine', result=results)
+        except Exception as e:
+            logger.exception(f"[Job {jid}] echec : {e}")
+            update_job(jid, status='failed', error=str(e))
+
+    threading.Thread(target=_run_job, args=(job_id, files_data), daemon=True).start()
+    cleanup_old_jobs()
+    return jsonify({'job_id': job_id, 'status': 'pending'}), 202
+
+
+@app.route('/api/jobs/<job_id>', methods=['GET'])
+@login_required
+def api_job_status(job_id):
+    # Garde-fou : job_id est un uuid hex
+    if not re.fullmatch(r'[a-f0-9]{32}', job_id or ''):
+        return jsonify({'error': 'job_id invalide'}), 400
+    data = load_job(job_id)
+    if data is None:
+        return jsonify({'error': 'Job introuvable'}), 404
+    return jsonify(data)
 
 
 @app.route('/api/review/<run_id>', methods=['GET'])
