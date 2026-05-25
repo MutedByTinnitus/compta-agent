@@ -8,3 +8,12 @@ python-dotenv==1.1.0
 google-auth==2.38.0
 Pillow==11.2.1
 json-repair>=0.30.0
+
+# DB + auth
+SQLAlchemy>=2.0,<3.0
+Flask-SQLAlchemy>=3.1
+psycopg2-binary>=2.9
+alembic>=1.13
+Flask-Login>=0.6
+bcrypt>=4.1
+email-validator>=2.0

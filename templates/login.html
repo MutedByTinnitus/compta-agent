@@ -1,34 +1,79 @@
-{% extends "base.html" %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connexion — ENOP.AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lora:ital,wght@0,500;1,400&display=swap" rel="stylesheet">
+<link rel="icon" href="{{ url_for('static', filename='img/logo-enop.svg') }}" type="image/svg+xml">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0a1410;
+    color: #f5f0e6; font-family: 'Inter', system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .wrap { width: 100%; max-width: 420px; }
+  .brand {
+    font-family: 'Lora', Georgia, serif; font-size: 32px; font-weight: 500;
+    text-align: center; margin-bottom: 8px; letter-spacing: -0.5px;
+  }
+  .brand .dot { color: #3dd9a8; }
+  .tag { text-align: center; color: #8a9590; font-size: 13px; margin-bottom: 32px; }
+  .card {
+    background: #14201b; border: 1px solid #1f2d28;
+    padding: 36px 32px; border-radius: 16px;
+  }
+  h1 { font-family: 'Lora', Georgia, serif; font-size: 22px; font-weight: 500; margin: 0 0 20px; }
+  label { display: block; font-size: 13px; color: #c5cdc8; margin-bottom: 6px; margin-top: 14px; }
+  input[type="email"], input[type="text"], input[type="password"] {
+    width: 100%; padding: 11px 14px; background: #0a1410;
+    border: 1px solid #2a3530; color: #f5f0e6; border-radius: 8px;
+    font-family: inherit; font-size: 14px; outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus { border-color: #3dd9a8; }
+  .btn {
+    width: 100%; padding: 12px; margin-top: 24px;
+    background: #3dd9a8; color: #0a1410; border: none; border-radius: 10px;
+    font-weight: 600; font-size: 14px; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: #4eecb8; }
+  .err {
+    background: rgba(232,93,93,.1); border: 1px solid rgba(232,93,93,.3);
+    color: #e85d5d; padding: 10px 14px; border-radius: 8px;
+    font-size: 13px; margin-bottom: 16px;
+  }
+  .alt { text-align: center; margin-top: 18px; font-size: 13px; color: #8a9590; }
+  .alt a { color: #3dd9a8; text-decoration: none; }
+  .alt a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">enop<span class="dot">.ai</span></div>
+  <div class="tag">Plateforme cabinets d'expertise comptable</div>
 
-{% block title %}Connexion — Enop.ai{% endblock %}
+  <div class="card">
+    <h1>Connexion</h1>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
 
-{% block css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
-{% endblock %}
+    <form method="POST" action="{{ url_for('auth.login') }}">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required autofocus autocomplete="email">
 
-{% block body %}
-<div class="login-card">
-    <div class="logo">Enop.ai</div>
-    <div class="subtitle">Agent comptable intelligent</div>
+      <label for="password">Mot de passe</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password">
 
-    {% if error %}
-    <div class="error">{{ error }}</div>
-    {% endif %}
-
-    <form method="POST" action="/login" autocomplete="off">
-        <div class="field">
-            <label>Identifiant</label>
-            <input type="text" name="username" required autofocus>
-        </div>
-        <div class="field">
-            <label>Mot de passe</label>
-            <input type="password" name="password" required>
-        </div>
-        <button type="submit" class="submit-btn">Se connecter</button>
+      <button class="btn" type="submit">Se connecter</button>
     </form>
 
-    <div class="footer">
-        Connexion chiffree &middot; Aucune donnee stockee
-    </div>
+    <div class="alt">Pas de compte ? <a href="{{ url_for('auth.signup') }}">S'inscrire</a></div>
+  </div>
 </div>
-{% endblock %}
+</body>
+</html>

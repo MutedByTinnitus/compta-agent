@@ -1,4 +1,4 @@
-// app/Ocr.jsx — Agent OCR 3-step flow: Upload → Validation → Export
+// app/Ocr.jsx — Agent Saisie 3-step flow: Upload → Validation → Export
 
 const STEPS_OCR = ['Upload', 'Validation', 'Export'];
 
@@ -98,7 +98,29 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
   const [processing, setProcessing] = React.useState(false);
   const [progress, setProgress] = React.useState({ percent: 0, step: 'upload', detail: '' });
   const [error, setError] = React.useState(null);
+  const [clients, setClients] = React.useState([]);
+  const [clientId, setClientId] = React.useState('');
+  const [dossiers, setDossiers] = React.useState([]);
+  const [dossierId, setDossierId] = React.useState('');
   const inputRef = React.useRef(null);
+
+  // Charger les clients de l'org pour le sélecteur
+  React.useEffect(() => {
+    fetch('/api/clients', { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setClients(d.clients || []); })
+      .catch(() => {});
+  }, []);
+
+  // Quand on change de client, charger ses dossiers
+  React.useEffect(() => {
+    setDossierId('');
+    if (!clientId) { setDossiers([]); return; }
+    fetch(`/api/dossiers?client_id=${encodeURIComponent(clientId)}`, { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setDossiers(d.dossiers || []); })
+      .catch(() => setDossiers([]));
+  }, [clientId]);
 
   const handleFiles = (fileList) => {
     const f = fileList && fileList[0];
@@ -117,6 +139,8 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
     try {
       const fd = new FormData();
       fd.append('files', file.raw);
+      if (clientId) fd.append('client_id', clientId);
+      if (dossierId) fd.append('dossier_id', dossierId);
       const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
       fd.append('csrf_token', csrf);
 
@@ -147,8 +171,8 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
   return (
     <div className="app-page" style={{ maxWidth: 1080 }}>
       <PageHeader
-        kicker="Agent OCR & Écritures comptables"
-        title="Nouveau ticket"
+        kicker="Agent Saisie"
+        title="Nouvelle saisie"
         subtitle="Scannez un ticket ou une facture. L'agent extrait les montants et génère les écritures comptables, prêtes à exporter."
       />
       <Steps steps={STEPS_OCR} current={0} />
@@ -220,6 +244,65 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
         </div>
 
         <div>
+          {clients.length > 0 && (
+            <div className="app-card app-card-body" style={{ marginBottom: 14 }}>
+              <div className="label" style={{ marginBottom: 8 }}>Rattacher ce run (optionnel)</div>
+              <div className="caption" style={{ marginBottom: 10 }}>
+                Lier à un client et un exercice pour l'organiser dans l'historique.
+              </div>
+
+              <span className="caption" style={{ fontSize: 11 }}>Client</span>
+              <select value={clientId}
+                      onChange={(e) => setClientId(e.target.value)}
+                      style={{
+                        width: '100%', boxSizing: 'border-box',
+                        marginTop: 4, marginBottom: 10,
+                        padding: '9px 12px',
+                        background: 'var(--app-card-hi)',
+                        border: '1px solid var(--app-line)',
+                        borderRadius: 6, color: 'var(--text)',
+                        fontFamily: 'inherit', fontSize: 13, outline: 'none',
+                      }}>
+                <option value="">— Non classé —</option>
+                {clients.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.siren ? ` (${c.siren})` : ''}
+                  </option>
+                ))}
+              </select>
+
+              {clientId && (
+                <>
+                  <span className="caption" style={{ fontSize: 11 }}>Dossier</span>
+                  <select value={dossierId}
+                          onChange={(e) => setDossierId(e.target.value)}
+                          disabled={dossiers.length === 0}
+                          style={{
+                            width: '100%', boxSizing: 'border-box',
+                            marginTop: 4,
+                            padding: '9px 12px',
+                            background: 'var(--app-card-hi)',
+                            border: '1px solid var(--app-line)',
+                            borderRadius: 6, color: 'var(--text)',
+                            fontFamily: 'inherit', fontSize: 13, outline: 'none',
+                            opacity: dossiers.length === 0 ? 0.5 : 1,
+                          }}>
+                    {dossiers.length === 0 ? (
+                      <option value="">— Aucun dossier pour ce client —</option>
+                    ) : (
+                      <>
+                        <option value="">— Aucun (non rattaché) —</option>
+                        {dossiers.map(d => (
+                          <option key={d.id} value={d.id}>{d.label}</option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                </>
+              )}
+            </div>
+          )}
+
           <div className="app-card app-card-body">
             <div className="label" style={{ marginBottom: 12 }}>Guide de prise de vue</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -416,14 +499,43 @@ const OcrValidation = ({ onNext, onBack, runResult }) => {
 
   const allDone = counts.doubtful === 0;
 
+  const reopened = !!runResult?._reopened;
+  const dbRunId = runResult?.db_run_id;
+
+  const downloadExcel = () => {
+    if (!dbRunId) return;
+    // On va chercher excel_path via /api/runs/<id>
+    fetch(`/api/runs/${dbRunId}`, { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && d.excel_path) window.location.href = `/api/download/${d.excel_path}`;
+        else alert("Aucun Excel disponible pour ce run. Lancez d'abord l'export.");
+      });
+  };
+  const downloadRescan = () => {
+    if (runId) window.location.href = `/api/rescan-pdf/${runId}`;
+  };
+
   return (
     <div className="app-page-wide" style={{ maxWidth: 1400, margin: '0 auto' }}>
       <PageHeader
-        kicker="Agent OCR"
-        title="Validation des tickets"
-        subtitle={`Run ${runId.slice(0, 12)} · ${good.length} auto-validés · ${doubtful.length} à revoir · ${unreadable.length} illisibles`}
+        kicker={reopened ? 'Historique · saisie rouverte' : 'Agent Saisie'}
+        title={reopened ? 'Détail du run' : 'Validation des tickets'}
+        subtitle={`Saisie #${runId.slice(0, 12)} · ${good.length} auto-validés · ${doubtful.length} à revoir · ${unreadable.length} illisibles`}
+        actions={reopened ? (
+          <>
+            <button className="app-btn app-btn-secondary" onClick={downloadExcel}>
+              <I.Download size={13}/> Excel
+            </button>
+            {unreadable.length > 0 && (
+              <button className="app-btn app-btn-secondary" onClick={downloadRescan}>
+                <I.Download size={13}/> PDF rescan
+              </button>
+            )}
+          </>
+        ) : null}
       />
-      <Steps steps={STEPS_OCR} current={1} />
+      {!reopened && <Steps steps={STEPS_OCR} current={1} />}
 
       {/* Onglets */}
       <div style={{ display: 'flex', gap: 4, marginTop: 22, borderBottom: '1px solid var(--app-line)' }}>
@@ -468,12 +580,21 @@ const OcrValidation = ({ onNext, onBack, runResult }) => {
         <button className="app-btn app-btn-secondary" onClick={onBack}>
           <I.ChevronLeft size={13}/> Retour
         </button>
-        <button className={`app-btn app-btn-primary ${!allDone ? 'app-btn-disabled' : ''}`}
-                disabled={!allDone}
-                onClick={onNext}
-                title={allDone ? '' : 'Traitez tous les tickets douteux avant export'}>
-          {allDone ? 'Valider et exporter' : `${counts.doubtful} ticket${counts.doubtful > 1 ? 's' : ''} à traiter`} <I.ArrowRight size={13}/>
-        </button>
+        {reopened ? (
+          <button className="app-btn app-btn-primary"
+                  disabled={!allDone}
+                  onClick={onNext}
+                  title={allDone ? 'Régénérer un Excel à partir des validations actuelles' : 'Traitez tous les tickets douteux d\'abord'}>
+            {allDone ? 'Régénérer l\'export' : `${counts.doubtful} ticket${counts.doubtful > 1 ? 's' : ''} à traiter`} <I.ArrowRight size={13}/>
+          </button>
+        ) : (
+          <button className={`app-btn app-btn-primary ${!allDone ? 'app-btn-disabled' : ''}`}
+                  disabled={!allDone}
+                  onClick={onNext}
+                  title={allDone ? '' : 'Traitez tous les tickets douteux avant export'}>
+            {allDone ? 'Valider et exporter' : `${counts.doubtful} ticket${counts.doubtful > 1 ? 's' : ''} à traiter`} <I.ArrowRight size={13}/>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -673,17 +794,18 @@ const Field = ({ label, value, onChange, readOnly, mono }) => (
     <input type="text" value={value ?? ''} readOnly={readOnly}
            onChange={(e) => onChange(e.target.value)}
            style={{
+             width: '100%', boxSizing: 'border-box',
              background: readOnly ? 'transparent' : 'var(--app-card-hi)',
              border: '1px solid var(--app-line)',
              borderRadius: 6, padding: '7px 10px',
              color: 'var(--text)', fontFamily: mono ? "'JetBrains Mono', monospace" : 'inherit',
-             fontSize: 12.5, outline: 'none',
+             fontSize: 12.5, outline: 'none', minWidth: 0,
            }}/>
   </label>
 );
 
 const Row = ({ children }) => (
-  <div style={{ display: 'flex', gap: 10 }}>{children}</div>
+  <div style={{ display: 'flex', gap: 10, width: '100%' }}>{children}</div>
 );
 
 const FailActions = ({ ticket }) => (
@@ -780,7 +902,7 @@ const OcrExport = ({ onNavigate, runResult }) => {
   return (
     <div className="app-page" style={{ maxWidth: 1100 }}>
       <PageHeader
-        kicker="Agent OCR"
+        kicker="Agent Saisie"
         title="Export comptable"
         subtitle="Choisissez le format d'export et téléchargez les écritures validées."
       />
@@ -858,7 +980,7 @@ const OcrExport = ({ onNavigate, runResult }) => {
         <div>
           <div className="label" style={{ marginBottom: 12 }}>Récapitulatif du run</div>
           <div className="app-card app-card-body">
-            <SummaryRow label="Run ID"             value={runId ? runId.slice(0, 12) + '…' : '—'} mono />
+            <SummaryRow label="Saisie #"           value={runId ? runId.slice(0, 12) + '…' : '—'} mono />
             <SummaryRow label="Pages traitées"     value={summary.total ?? '—'} />
             <SummaryRow label="Tickets exploités"  value={summary.exploites ?? '—'} />
             <SummaryRow label="Tickets illisibles" value={summary.inexploites ?? '—'} />
@@ -885,7 +1007,7 @@ const OcrExport = ({ onNavigate, runResult }) => {
 
       <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between' }}>
         <button className="app-btn app-btn-secondary" onClick={() => onNavigate('ocr-upload')}>
-          <I.Plus size={12}/> Nouveau ticket
+          <I.Plus size={12}/> Nouvelle saisie
         </button>
         <button className="app-btn app-btn-primary" onClick={() => onNavigate('dashboard')}>
           Retour au tableau de bord <I.ArrowRight size={13}/>

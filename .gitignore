@@ -11,3 +11,12 @@ login_attempts.json
 static/review/
 PROJET.md
 design-claude/
+# DB locale + jobs runtime
+jobs/
+enop_local.db
+*.sqlite
+*.sqlite3
+# Volume Docker postgres
+postgres_data/
+# Settings IDE / Claude Code
+.claude/

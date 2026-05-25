@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: compta-agent
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://enop:${DB_PASSWORD:-enop_dev}@db:5432/enop
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_change_me_in_prod}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_DOCAI_PROJECT_ID: ${GOOGLE_DOCAI_PROJECT_ID}
+      GOOGLE_DOCAI_PROCESSOR_ID: ${GOOGLE_DOCAI_PROCESSOR_ID}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/docai.json
+      PRIMARY_LLM: ${PRIMARY_LLM:-gemini}
+      MAX_PAGES_PER_BATCH: ${MAX_PAGES_PER_BATCH:-50}
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:-changeme}
+      ALLOW_LEGACY_ADMIN: ${ALLOW_LEGACY_ADMIN:-true}
+    env_file:
+      - .env
+    volumes:
+      - ./outputs:/app/outputs
+      - ./jobs:/app/jobs
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+      - ./credentials:/app/credentials
+      - ./static/review:/app/static/review
+      # Dev: bind les sources front + templates + code Python pour hot-reload sans rebuild
+      - ./static/jsx:/app/static/jsx
+      - ./static/css:/app/static/css
+      - ./static/img:/app/static/img
+      - ./templates:/app/templates
+      - ./app:/app/app
+      - ./ocr_engine.py:/app/ocr_engine.py
+      - ./run.py:/app/run.py
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: compta-agent-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: enop
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-enop_dev}
+      POSTGRES_DB: enop
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U enop -d enop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

@@ -75,6 +75,7 @@ const AuthForm = ({ mode, onSubmit, onSwitch }) => {
   const isLogin = mode === 'login';
   const [showPwd, setShowPwd] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
   const [form, setForm] = React.useState({
     email: '', password: '',
     firstName: '', lastName: '', cabinet: '', siret: '',
@@ -82,19 +83,53 @@ const AuthForm = ({ mode, onSubmit, onSwitch }) => {
   });
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const handle = (e) => {
+  const handle = async (e) => {
     e.preventDefault();
+    setError(null);
     setLoading(true);
-    setTimeout(() => {
+
+    try {
+      const endpoint = isLogin ? '/login' : '/signup';
+      const body = new URLSearchParams();
+      body.set('email', form.email);
+      body.set('password', form.password);
+      if (!isLogin) {
+        body.set('first_name', form.firstName);
+        body.set('last_name', form.lastName);
+        body.set('cabinet', form.cabinet);
+        if (form.siret) body.set('siret', form.siret);
+      }
+
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+        credentials: 'same-origin',
+        redirect: 'follow',
+      });
+
+      // Succès : Flask redirige vers / (302 → 200 sur /)
+      if (resp.ok && (resp.redirected || resp.url.endsWith('/'))) {
+        window.location.href = '/';
+        return;
+      }
+
+      // Échec : Flask renvoie HTML avec un message d'erreur, statut 4xx
+      if (!resp.ok) {
+        const html = await resp.text();
+        const match = html.match(/class="err"[^>]*>([^<]+)</);
+        const msg = match ? match[1].trim() :
+                    (isLogin ? 'Identifiants invalides' : 'Erreur lors de la création');
+        throw new Error(msg);
+      }
+
+      // Cas dégénéré : 200 mais sans redirect (ne devrait pas arriver)
+      throw new Error('Réponse inattendue du serveur');
+
+    } catch (err) {
+      setError(err.message);
       setLoading(false);
-      // Derive a user from the form
-      const name = isLogin
-        ? 'Claire Lemoine'
-        : `${form.firstName || 'Claire'} ${form.lastName || 'Lemoine'}`.trim();
-      const initials = name.split(' ').filter(Boolean).map(s => s[0]).join('').slice(0, 2).toUpperCase() || 'CL';
-      const org = isLogin ? 'Cabinet Lemoine & Pelletier' : (form.cabinet || 'Mon cabinet');
-      onSubmit({ name, initials, org, email: form.email });
-    }, 700);
+    }
   };
 
   return (
@@ -116,7 +151,7 @@ const AuthForm = ({ mode, onSubmit, onSwitch }) => {
         </h2>
         <p style={{ fontSize: 13.5, color: 'var(--text-dim)', margin: '0 0 32px', lineHeight: 1.55 }}>
           {isLogin
-            ? 'Retrouvez vos clients, vos dossiers et l\'agent OCR.'
+            ? 'Retrouvez vos clients, vos dossiers et l\'agent de saisie automatique.'
             : 'Créez votre cabinet. Pas de carte bancaire requise — 30 tickets gratuits.'}
         </p>
 
@@ -198,10 +233,21 @@ const AuthForm = ({ mode, onSubmit, onSwitch }) => {
             </label>
           )}
 
+          {error && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8,
+              background: 'rgba(232,93,93,0.1)',
+              border: '1px solid rgba(232,93,93,0.3)',
+              color: '#e85d5d', fontSize: 13,
+            }}>
+              {error}
+            </div>
+          )}
+
           <button type="submit" className="app-btn app-btn-primary app-btn-lg"
                   disabled={loading}
                   style={{ width: '100%', marginTop: 8 }}>
-            {loading ? 'Connexion…' : (isLogin ? 'Se connecter' : 'Créer mon compte')}
+            {loading ? (isLogin ? 'Connexion…' : 'Création…') : (isLogin ? 'Se connecter' : 'Créer mon compte')}
             {!loading && <I.ArrowRight size={14} />}
           </button>
         </div>

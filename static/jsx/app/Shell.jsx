@@ -104,15 +104,16 @@ const Sidebar = ({ active, onNavigate }) => {
         padding: '0 18px 8px', fontFamily: 'JetBrains Mono, monospace',
       }}>Espace de travail</div>
       <NavItem id="dashboard" icon={<I.Dashboard />} label="Tableau de bord" />
+      <NavItem id="history"   icon={<I.File />}     label="Historique" />
       <NavItem id="clients"   icon={<I.Clients />}  label="Clients" />
-      <NavItem id="dossiers"  icon={<I.Folder />}   label="Dossiers" badge="14" locked />
+      <NavItem id="dossiers"  icon={<I.Folder />}   label="Dossiers" />
 
       <div style={{
         fontSize: 10, fontWeight: 600, letterSpacing: '0.14em',
         textTransform: 'uppercase', color: 'var(--text-mute)',
         padding: '22px 18px 8px', fontFamily: 'JetBrains Mono, monospace',
       }}>Agents IA</div>
-      <NavItem id="ocr"       icon={<I.Camera />}   label="OCR & Écritures" />
+      <NavItem id="ocr"       icon={<I.Camera />}   label="Agent Saisie" />
       <NavItem id="documents" icon={<I.Doc />}      label="Documents juridiques" locked />
       <NavItem id="templates" icon={<I.Template />} label="Templates" locked />
 
@@ -135,7 +136,7 @@ const Sidebar = ({ active, onNavigate }) => {
       </div>
 
       <div style={{ borderTop: '1px solid var(--app-line)', padding: '6px 0 10px' }}>
-        <NavItem id="settings" icon={<I.Settings />} label="Paramètres" locked />
+        <NavItem id="settings" icon={<I.Settings />} label="Paramètres" />
         <NavItem id="support"  icon={<I.Help />}     label="Support" locked />
       </div>
     </aside>
