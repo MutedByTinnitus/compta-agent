@@ -252,8 +252,13 @@ RETRY_BASE_DELAY = 1
 RATE_LIMIT_DELAY = 0.5
 RATE_LIMIT_429_WAIT = 15
 
+# --- Chemins absolus (ancrés à la racine du projet, pas au CWD) ---
+# Le CWD peut différer selon le mode de lancement (Flask factory, alembic, etc.),
+# donc on ancre tout sur le dossier qui contient ocr_engine.py = racine du repo.
+_BASE_DIR = Path(__file__).resolve().parent
+
 # --- Brute-force protection ---
-LOGIN_ATTEMPTS_FILE = Path('login_attempts.json')
+LOGIN_ATTEMPTS_FILE = _BASE_DIR / 'login_attempts.json'
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION = 300  # 5 minutes
 
@@ -269,10 +274,10 @@ WEBHOOK_TOKEN = os.environ.get('WEBHOOK_TOKEN', '')
 # --- Dédup globale cross-page ---
 DEDUP_ENABLED = os.environ.get('DEDUP_ENABLED', 'true').lower() == 'true'
 
-# --- Dossiers ---
-OUTPUT_FOLDER = Path('outputs')
+# --- Dossiers (chemins absolus depuis la racine du repo) ---
+OUTPUT_FOLDER = _BASE_DIR / 'outputs'
 OUTPUT_FOLDER.mkdir(exist_ok=True)
-CACHE_FOLDER = Path('cache')
+CACHE_FOLDER = _BASE_DIR / 'cache'
 CACHE_FOLDER.mkdir(exist_ok=True)
 CACHE_ENABLED = os.environ.get('CACHE_ENABLED', 'true').lower() == 'true'
 
@@ -288,8 +293,8 @@ SMTP_PORT = 465
 CHECK_INTERVAL = 30
 
 # --- Prompts vision (externalises) ---
-VISION_PROMPT = Path('prompts/vision_extraction.md').read_text(encoding='utf-8')
-JUDGE_PROMPT = Path('prompts/vision_judge.md').read_text(encoding='utf-8')
+VISION_PROMPT = (_BASE_DIR / 'prompts' / 'vision_extraction.md').read_text(encoding='utf-8')
+JUDGE_PROMPT = (_BASE_DIR / 'prompts' / 'vision_judge.md').read_text(encoding='utf-8')
 
 # --- Addon JSON strict pour retry Gemini ---
 JSON_STRICT_ADDON = """
@@ -466,7 +471,7 @@ def schedule_cleanup():
 
 import uuid as _uuid
 
-REVIEW_BASE = Path("static/review")
+REVIEW_BASE = _BASE_DIR / "static" / "review"
 REVIEW_BASE.mkdir(parents=True, exist_ok=True)
 
 
@@ -474,7 +479,7 @@ REVIEW_BASE.mkdir(parents=True, exist_ok=True)
 # JOB STORE (traitement asynchrone /api/process)
 # ===================================================================
 
-JOBS_DIR = Path("jobs")
+JOBS_DIR = _BASE_DIR / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 _JOBS_LOCK = threading.Lock()
 
