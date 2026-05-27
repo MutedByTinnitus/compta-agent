@@ -1,0 +1,105 @@
+# docker-compose.prod.yml
+# Déploiement Portainer Stack pour Enop.ai (nouvelle version V1 multi-tenant)
+#
+# - Tourne EN PARALLÈLE de l'ancien stack 'agent' (port 5000) sans conflit
+# - Ports hôte : 5001 (Flask), 5433 (Postgres) — modifiables via Portainer
+# - Tous les secrets viennent des variables d'env Portainer (pas en clair ici)
+# - L'app et la DB partagent un network privé 'enop2_net'
+#
+# DÉPLOIEMENT :
+#   Portainer > Stacks > + Add stack
+#   - Name: enop2
+#   - Build method: Repository
+#   - Repository URL: https://github.com/MutedByTinnitus/compta-agent
+#   - Compose path: docker-compose.prod.yml
+#   - Environment variables: voir liste plus bas
+#   - Deploy
+#
+# VARIABLES À DÉFINIR DANS PORTAINER :
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   GEMINI_API_KEY=AIza...
+#   GOOGLE_DOCAI_PROJECT_ID=compta-492313
+#   GOOGLE_DOCAI_PROCESSOR_ID=c7966298766afaaf
+#   SECRET_KEY=<générer 32+ chars aléatoires>
+#   DB_PASSWORD=<choisir un mot de passe fort>
+#   APP_USERNAME=admin
+#   APP_PASSWORD=<nouveau mot de passe>
+#   ALLOW_LEGACY_ADMIN=true       # à passer false une fois en prod sans tests
+#   PRIMARY_LLM=gemini
+#   HOST_PORT_APP=5001            # port exposé côté hôte pour Flask
+#   HOST_PORT_DB=5433             # port exposé côté hôte pour Postgres
+#
+# OPTIONNEL si tu utilises Google DocAI :
+#   - place ton service_account.json dans /var/lib/portainer/enop2/credentials/
+#   - ou ajuste le path du volume credentials ci-dessous
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: enop2-app
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT_APP:-5001}:5000"
+    environment:
+      DATABASE_URL: postgresql://enop:${DB_PASSWORD:-changeme}@db:5432/enop
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_change_me}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_DOCAI_PROJECT_ID: ${GOOGLE_DOCAI_PROJECT_ID}
+      GOOGLE_DOCAI_PROCESSOR_ID: ${GOOGLE_DOCAI_PROCESSOR_ID}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/service_account.json
+      PRIMARY_LLM: ${PRIMARY_LLM:-gemini}
+      MAX_PAGES_PER_BATCH: ${MAX_PAGES_PER_BATCH:-50}
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:-changeme}
+      ALLOW_LEGACY_ADMIN: ${ALLOW_LEGACY_ADMIN:-true}
+      # En prod derrière un reverse proxy HTTPS, mettre à true :
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    volumes:
+      - enop2_outputs:/app/outputs
+      - enop2_jobs:/app/jobs
+      - enop2_logs:/app/logs
+      - enop2_cache:/app/cache
+      - enop2_review:/app/static/review
+      # Credentials Google DocAI (à placer manuellement sur le serveur)
+      - enop2_credentials:/app/credentials
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - enop2_net
+
+  db:
+    image: postgres:16-alpine
+    container_name: enop2-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: enop
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: enop
+    volumes:
+      - enop2_pgdata:/var/lib/postgresql/data
+    ports:
+      - "${HOST_PORT_DB:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U enop -d enop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - enop2_net
+
+volumes:
+  enop2_pgdata:
+  enop2_outputs:
+  enop2_jobs:
+  enop2_logs:
+  enop2_cache:
+  enop2_review:
+  enop2_credentials:
+
+networks:
+  enop2_net:
+    driver: bridge
