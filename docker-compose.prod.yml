@@ -4,7 +4,8 @@
 # - Tourne EN PARALLÈLE de l'ancien stack 'agent' (port 5000) sans conflit
 # - Ports hôte : 5001 (Flask), 5433 (Postgres) — modifiables via Portainer
 # - Tous les secrets viennent des variables d'env Portainer (pas en clair ici)
-# - L'app et la DB partagent un network privé 'enop2_net'
+# - L'app et la DB partagent le network Docker 'agent_default' existant
+#   (évite l'erreur 'all predefined address pools have been fully subnetted')
 #
 # DÉPLOIEMENT :
 #   Portainer > Stacks > + Add stack
@@ -68,8 +69,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      - enop2_net
 
   db:
     image: postgres:16-alpine
@@ -88,8 +87,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    networks:
-      - enop2_net
 
 volumes:
   enop2_pgdata:
@@ -100,6 +97,10 @@ volumes:
   enop2_review:
   enop2_credentials:
 
+# On réutilise un network Docker EXISTANT au lieu d'en créer un nouveau.
+# Raison : le serveur a déjà beaucoup de stacks, plus de plage IP dispo pour un nouveau /16.
+# Le network 'agent_default' existe déjà (créé par l'ancien stack 'agent') et fonctionne.
 networks:
-  enop2_net:
-    driver: bridge
+  default:
+    name: agent_default
+    external: true
