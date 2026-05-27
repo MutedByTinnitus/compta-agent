@@ -18,5 +18,7 @@ RUN mkdir -p outputs logs prompts cache credentials jobs static/review
 
 EXPOSE 5000
 
-# Migrations Alembic au boot, puis serveur Flask
-CMD ["sh", "-c", "alembic upgrade head 2>/dev/null || true; python run.py"]
+# Script d'entrée : attend la DB, applique les migrations, lance Flask
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+CMD ["/docker-entrypoint.sh"]
