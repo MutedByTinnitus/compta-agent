@@ -26,7 +26,7 @@
 #   APP_PASSWORD=<nouveau mot de passe>
 #   ALLOW_LEGACY_ADMIN=true       # à passer false une fois en prod sans tests
 #   PRIMARY_LLM=gemini
-#   HOST_PORT_APP=5001            # port exposé côté hôte pour Flask
+#   HOST_PORT_APP=5000            # port exposé côté hôte pour Flask (5000 par défaut)
 #   HOST_PORT_DB=5433             # port exposé côté hôte pour Postgres
 #
 # OPTIONNEL si tu utilises Google DocAI :
@@ -41,7 +41,7 @@ services:
     container_name: enop2-app
     restart: unless-stopped
     ports:
-      - "${HOST_PORT_APP:-5001}:5000"
+      - "${HOST_PORT_APP:-5000}:5000"
     environment:
       DATABASE_URL: postgresql://enop:${DB_PASSWORD:-changeme}@db:5432/enop
       SECRET_KEY: ${SECRET_KEY:-dev_secret_change_me}
