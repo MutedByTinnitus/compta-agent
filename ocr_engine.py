@@ -1290,25 +1290,26 @@ def call_gemini_vision_judge(png_b64, extraction_claude):
 def needs_judge(tickets):
     """Retourne True si au moins 1 ticket nécessite la validation du judge Claude.
 
-    Critères durcis pour éviter les appels Claude coûteux sur des cas sans gravité.
-    Le judge ne se déclenche que sur des signaux clairs d'incertitude :
-    - confidence vraiment basse
-    - montant élevé (> 500€) - les petits tickets sont moins critiques
-    - incohérence HT+TVA vs TTC (vrai bug d'extraction)
-    - incohérence fournisseur/type (mauvaise classification)
-
-    Critères retirés (trop déclencheurs, peu de valeur ajoutée) :
-    - mode_paiement == INCONNU : Gemini gère bien sans Claude
-    - ttc > 200€ : seuil monté à 500€
+    Critères de déclenchement :
+    - confidence < 0.80 : extraction douteuse côté Gemini
+    - ttc > 500€ : seuil monté de 200 à 500 (un ticket de note de frais > 500€
+      est plus susceptible de mériter une 2e paire d'yeux). Pour les vraies
+      factures fournisseurs élevées, le judge reste utile.
+    - mode_paiement = INCONNU : Gemini ne voit pas la mention CB/ESP/CHQ sur le
+      ticket, Claude est meilleur pour deviner depuis le contexte.
+    - HT + TVA != TTC (au delà de 10 centimes) : vrai bug d'extraction.
+    - Incohérence fournisseur/type (mauvaise classification compta).
     """
     if not tickets:
         return False
     for t in tickets:
         conf = float(t.get('confidence', 1.0) or 1.0)
-        if conf < 0.70:  # 0.80 -> 0.70 (Gemini est bon, on ne demande Claude que sur du vraiment douteux)
+        if conf < 0.80:
             return True
         ttc = float(t.get('montant_ttc', 0) or 0)
-        if ttc > 500.00:  # 200 -> 500 (un ticket à 250€ ne justifie pas un appel Claude à $0.10)
+        if ttc > 500.00:  # seul critère assoupli (200 -> 500)
+            return True
+        if str(t.get('mode_paiement', '')).upper() == 'INCONNU':
             return True
         ht = float(t.get('montant_ht', 0) or 0)
         tva = float(t.get('montant_tva', 0) or 0)
