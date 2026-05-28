@@ -652,13 +652,10 @@ def crop_ticket_image(pdf_bytes: bytes, page_num: int = 0,
         if clip is None:
             logger.warning(f"  [Crop] {ticket_id} sans bbox valide, fallback page entière")
 
-        # Matrice de zoom + auto-rotation selon métadonnées PDF.
-        # PyMuPDF n'applique PAS automatiquement page.rotation au get_pixmap, donc on le fait.
+        # Matrice de zoom uniquement. PyMuPDF applique déjà page.rotation
+        # automatiquement dans get_pixmap — pas besoin de la rajouter
+        # (sinon double rotation et tickets à l'envers).
         mat = fitz.Matrix(200 / 72, 200 / 72)
-        page_rotation = page.rotation or 0
-        if page_rotation:
-            mat = mat * fitz.Matrix(page_rotation)
-            logger.info(f"  [Crop] {ticket_id} auto-rotation {page_rotation}°")
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
         pix.save(str(output_path))
         doc.close()
