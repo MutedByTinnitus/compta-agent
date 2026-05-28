@@ -28,7 +28,7 @@ from ocr_engine import (
     sanitize_filename, process_tickets,
     save_job, load_job, update_job, cleanup_old_jobs,
     load_review_queue, load_auto_validated,
-    update_ticket_in_queue, _save_queue_data,
+    update_ticket_in_queue, update_ticket_anywhere, _save_queue_data,
     generate_ecritures_from_tickets, create_excel,
     REVIEW_BASE, OUTPUT_FOLDER, MAX_PAGES_PER_BATCH,
     logger,
@@ -444,7 +444,7 @@ def api_review_update(run_id, ticket_id, run=None):
         updates['user_corrected'] = True
 
     key = run.legacy_run_id or run.legacy_job_id or run_id
-    success = update_ticket_in_queue(key, ticket_id, updates)
+    success = update_ticket_anywhere(key, ticket_id, updates)
     if not success:
         return jsonify({'error': 'Ticket not found'}), 404
 

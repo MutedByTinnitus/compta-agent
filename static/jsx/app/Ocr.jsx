@@ -93,10 +93,9 @@ const TicketPreview = ({ ticket, ocrCase, fileUrl }) => {
 };
 
 // ─── Step 1: Upload ────────────────────────────────────────────────
-const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
+const OcrUpload = ({ onNext, file, setFile, setRunResult, startJob, jobActive }) => {
   const [drag, setDrag] = React.useState(false);
-  const [processing, setProcessing] = React.useState(false);
-  const [progress, setProgress] = React.useState({ percent: 0, step: 'upload', detail: '' });
+  const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [clients, setClients] = React.useState([]);
   const [clientId, setClientId] = React.useState('');
@@ -104,7 +103,6 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
   const [dossierId, setDossierId] = React.useState('');
   const inputRef = React.useRef(null);
 
-  // Charger les clients de l'org pour le sélecteur
   React.useEffect(() => {
     fetch('/api/clients', { credentials: 'same-origin' })
       .then(r => r.ok ? r.json() : null)
@@ -112,7 +110,6 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
       .catch(() => {});
   }, []);
 
-  // Quand on change de client, charger ses dossiers
   React.useEffect(() => {
     setDossierId('');
     if (!clientId) { setDossiers([]); return; }
@@ -132,9 +129,10 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
 
   const analyzeFile = async () => {
     if (!file?.raw) { setError("Aucun fichier sélectionné."); return; }
-    setProcessing(true);
+    if (jobActive) { setError("Une analyse est déjà en cours."); return; }
+
+    setSubmitting(true);
     setError(null);
-    setProgress({ percent: 0, step: 'upload', detail: 'Démarrage…' });
 
     try {
       const fd = new FormData();
@@ -154,16 +152,18 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
         try { msg = JSON.parse(txt).error || msg; } catch {}
         throw new Error(msg);
       }
-      const { job_id } = await resp.json();
-      if (!job_id) throw new Error("Réponse invalide du serveur (job_id manquant).");
+      const data = await resp.json();
+      if (!data.job_id) throw new Error("Réponse invalide du serveur (job_id manquant).");
 
-      const finalResult = await pollJob(job_id, (p) => setProgress(p));
-      setRunResult(finalResult);
-      setProcessing(false);
-      onNext();
+      // Lance le job en background dans AppRoot (polling persistant + toast)
+      startJob({ jobId: data.job_id, dbRunId: data.run_id });
+
+      // Reset le fichier pour permettre une nouvelle saisie
+      setFile(null);
+      setSubmitting(false);
     } catch (err) {
-      console.error('[OCR upload]', err);
-      setProcessing(false);
+      console.error('[Agent Saisie] submit', err);
+      setSubmitting(false);
       setError(err.message || 'Erreur inconnue');
     }
   };
@@ -234,10 +234,13 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
             </button>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="app-btn app-btn-secondary" onClick={() => setFile(null)}>Annuler</button>
-              <button className={`app-btn app-btn-primary ${!file ? 'app-btn-disabled' : ''}`}
-                      disabled={!file || processing} onClick={analyzeFile}>
-                <I.Sparkle size={13}/> Analyser
-                <I.ArrowRight size={13}/>
+              <button className={`app-btn app-btn-primary ${(!file || jobActive) ? 'app-btn-disabled' : ''}`}
+                      disabled={!file || submitting || jobActive}
+                      onClick={analyzeFile}
+                      title={jobActive ? 'Une analyse est déjà en cours' : ''}>
+                <I.Sparkle size={13}/>
+                {jobActive ? 'Analyse en cours…' : submitting ? 'Envoi…' : 'Analyser'}
+                {!jobActive && !submitting && <I.ArrowRight size={13}/>}
               </button>
             </div>
           </div>
@@ -331,7 +334,6 @@ const OcrUpload = ({ onNext, file, setFile, setRunResult }) => {
         </div>
       </div>
 
-      {processing && <ProcessingOverlay progress={progress} />}
     </div>
   );
 };
@@ -369,6 +371,31 @@ const ProcessingOverlay = ({ progress }) => {
     export: 'Génération des fichiers',
   }[progress.step] || 'Analyse en cours';
 
+  // Injecter les keyframes une seule fois
+  React.useEffect(() => {
+    if (document.getElementById('enop-processing-keyframes')) return;
+    const s = document.createElement('style');
+    s.id = 'enop-processing-keyframes';
+    s.textContent = `
+      @keyframes enop-shimmer {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+      }
+      @keyframes enop-pulse-bar {
+        0%, 100% { opacity: 0.85; }
+        50%      { opacity: 1; }
+      }
+      @keyframes enop-dots {
+        0%, 20%       { opacity: 0; }
+        40%           { opacity: 1; }
+        100%          { opacity: 0; }
+      }
+    `;
+    document.head.appendChild(s);
+  }, []);
+
+  const pct = Math.max(2, progress.percent || 0);
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(8,18,22,0.88)',
@@ -379,23 +406,41 @@ const ProcessingOverlay = ({ progress }) => {
         background: 'var(--app-card-hi, #0f1f1d)', border: '1px solid var(--app-line)',
         borderRadius: 16, padding: 36, maxWidth: 480, width: '90%',
       }}>
-        <div className="kicker" style={{ color: 'var(--accent)' }}>EN COURS</div>
+        <div className="kicker" style={{ color: 'var(--accent)' }}>
+          EN COURS
+          <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0s' }}>.</span>
+          <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0.2s' }}>.</span>
+          <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0.4s' }}>.</span>
+        </div>
         <h3 style={{
           fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: '6px 0 22px',
           color: 'var(--text)', fontWeight: 500,
         }}>
           {stepLabel}
         </h3>
+
+        {/* Barre avec shimmer en surcouche */}
         <div style={{
+          position: 'relative',
           height: 6, background: 'var(--app-line)', borderRadius: 999,
           overflow: 'hidden', marginBottom: 14,
         }}>
+          {/* Barre de progression */}
           <div style={{
             height: '100%', background: 'var(--accent)',
-            width: `${Math.max(2, progress.percent || 0)}%`,
+            width: `${pct}%`,
             transition: 'width 0.4s ease',
+            animation: 'enop-pulse-bar 1.8s ease-in-out infinite',
+          }}/>
+          {/* Shimmer qui glisse en boucle */}
+          <div style={{
+            position: 'absolute', inset: 0,
+            background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 50%, transparent 100%)',
+            animation: 'enop-shimmer 1.6s linear infinite',
+            pointerEvents: 'none',
           }}/>
         </div>
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{
             fontFamily: "'JetBrains Mono', monospace", fontSize: 22,
@@ -644,7 +689,7 @@ const TicketListItem = ({ ticket, selected, onClick }) => {
           {ticket.fournisseur || ticket.vendor || '—'}
         </div>
         <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>
-          {ticket.date || '?'} · {ticket.montant_ttc != null ? `${ticket.montant_ttc} €` : '—'}
+          {ticket.date || '?'} · {ticket.montant_ttc != null ? `${Number(ticket.montant_ttc).toFixed(2)} €` : '—'}
         </div>
         <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {status === 'validated' && <span className="app-badge app-badge-ok"><I.Check size={9} sw={3}/> Validé</span>}
@@ -659,22 +704,44 @@ const TicketListItem = ({ ticket, selected, onClick }) => {
   );
 };
 
+// Formatte un montant pour affichage : "4.3" -> "4.30", null/'' -> ''
+const fmtAmount = (v) => {
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n.toFixed(2);
+};
+
 const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
   const [fields, setFields] = React.useState(() => ({
     date: ticket.date || '',
     fournisseur: ticket.fournisseur || '',
-    montant_ttc: ticket.montant_ttc ?? '',
-    montant_ht: ticket.montant_ht ?? '',
-    montant_tva: ticket.montant_tva ?? '',
+    montant_ttc: fmtAmount(ticket.montant_ttc),
+    montant_ht: fmtAmount(ticket.montant_ht),
+    montant_tva: fmtAmount(ticket.montant_tva),
     type: ticket.type || '',
     mode_paiement: ticket.mode_paiement || '',
   }));
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState(null);
-  const readOnly = mode !== 'doubtful' || ticket.review_status === 'validated';
+  const [rotation, setRotation] = React.useState(0); // 0 / 90 / 180 / 270
+  // Édition autorisée sauf pour les tickets illisibles (rescan)
+  const readOnly = mode === 'unreadable';
   const imgPath = ticket.review_image_path;
 
   const setField = (k, v) => setFields(f => ({ ...f, [k]: v }));
+  const setAmountField = (k, v) => {
+    // Accepter tout en saisie (4, 4.3, 4.30, virgule), normaliser plus tard
+    const normalized = String(v).replace(',', '.');
+    setFields(f => ({ ...f, [k]: normalized }));
+  };
+  const blurAmount = (k) => {
+    // Au blur, on reformatte à 2 décimales
+    setFields(f => ({ ...f, [k]: fmtAmount(f[k]) }));
+  };
+
+  const rotateLeft = () => setRotation(r => (r - 90 + 360) % 360);
+  const rotateRight = () => setRotation(r => (r + 90) % 360);
 
   const callPatch = async (action, includeFields = false) => {
     setSaving(true); setErr(null);
@@ -709,22 +776,67 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 320px) 1fr', gap: 16, alignItems: 'start' }}>
-      {/* Image du ticket */}
+      {/* Image du ticket + contrôles de rotation */}
       <div className="app-card app-card-body" style={{
         background: 'var(--app-card-hi)', display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'flex-start', padding: 14,
       }}>
         {imgPath ? (
-          <a href={`/static/${imgPath}`} target="_blank" rel="noopener"
-             style={{ width: '100%', textAlign: 'center', display: 'block' }}>
+          <div style={{
+            width: '100%', overflow: 'hidden',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            minHeight: 320,
+          }}>
             <img src={`/static/${imgPath}`} alt="Ticket"
-                 style={{ width: '100%', maxHeight: 560, objectFit: 'contain', borderRadius: 6,
-                          background: '#FBF9F4', boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
-                          display: 'block' }}/>
-          </a>
+                 style={{
+                   maxWidth: '100%', maxHeight: 560, objectFit: 'contain',
+                   borderRadius: 6,
+                   background: '#FBF9F4', boxShadow: '0 4px 24px rgba(0,0,0,0.3)',
+                   display: 'block',
+                   transform: `rotate(${rotation}deg)`,
+                   transition: 'transform 0.25s ease',
+                 }}/>
+          </div>
         ) : (
           <div className="caption">Aperçu non disponible</div>
         )}
+
+        {/* Boutons rotation + ouvrir en grand */}
+        {imgPath && (
+          <div style={{
+            display: 'flex', gap: 6, marginTop: 12,
+            alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap',
+          }}>
+            <button type="button"
+                    className="app-btn app-btn-secondary app-btn-sm"
+                    onClick={rotateLeft}
+                    title="Pivoter à gauche (90° anti-horaire)"
+                    style={{ fontSize: 16, lineHeight: 1, padding: '5px 10px' }}>
+              ↺
+            </button>
+            <button type="button"
+                    className="app-btn app-btn-secondary app-btn-sm"
+                    onClick={rotateRight}
+                    title="Pivoter à droite (90° horaire)"
+                    style={{ fontSize: 16, lineHeight: 1, padding: '5px 10px' }}>
+              ↻
+            </button>
+            {rotation !== 0 && (
+              <button type="button"
+                      className="app-btn app-btn-ghost app-btn-sm"
+                      onClick={() => setRotation(0)}
+                      title="Remettre à l'endroit d'origine"
+                      style={{ fontSize: 11 }}>
+                Reset
+              </button>
+            )}
+            <a href={`/static/${imgPath}`} target="_blank" rel="noopener"
+               className="app-btn app-btn-ghost app-btn-sm">
+              <I.External size={11}/> Ouvrir
+            </a>
+          </div>
+        )}
+
         {ticket.source_page && (
           <div className="caption" style={{ marginTop: 10 }}>Source : {ticket.source_page}</div>
         )}
@@ -744,9 +856,18 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
           <Field label="Date"        value={fields.date}         onChange={v => setField('date', v)} readOnly={readOnly} />
           <Field label="Fournisseur" value={fields.fournisseur}  onChange={v => setField('fournisseur', v)} readOnly={readOnly} />
           <Row>
-            <Field label="Montant TTC" value={fields.montant_ttc} onChange={v => setField('montant_ttc', v)} readOnly={readOnly} mono />
-            <Field label="Montant HT"  value={fields.montant_ht}  onChange={v => setField('montant_ht', v)}  readOnly={readOnly} mono />
-            <Field label="TVA"         value={fields.montant_tva} onChange={v => setField('montant_tva', v)} readOnly={readOnly} mono />
+            <Field label="Montant TTC" value={fields.montant_ttc}
+                   onChange={v => setAmountField('montant_ttc', v)}
+                   onBlur={() => blurAmount('montant_ttc')}
+                   readOnly={readOnly} mono />
+            <Field label="Montant HT"  value={fields.montant_ht}
+                   onChange={v => setAmountField('montant_ht', v)}
+                   onBlur={() => blurAmount('montant_ht')}
+                   readOnly={readOnly} mono />
+            <Field label="TVA"         value={fields.montant_tva}
+                   onChange={v => setAmountField('montant_tva', v)}
+                   onBlur={() => blurAmount('montant_tva')}
+                   readOnly={readOnly} mono />
           </Row>
           <Row>
             <Field label="Type"          value={fields.type}          onChange={v => setField('type', v)} readOnly={readOnly} />
@@ -761,6 +882,7 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
           )}
         </div>
 
+        {/* Actions selon le mode et le statut */}
         {mode === 'doubtful' && ticket.review_status !== 'validated' && (
           <div style={{ padding: '12px 16px', borderTop: '1px solid var(--app-line)',
                         display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
@@ -778,9 +900,28 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
             </button>
           </div>
         )}
+
+        {/* Ticket déjà validé manuellement : badge + possibilité de re-modifier */}
         {ticket.review_status === 'validated' && (
-          <div style={{ padding: '12px 16px', borderTop: '1px solid var(--app-line)' }}>
+          <div style={{ padding: '12px 16px', borderTop: '1px solid var(--app-line)',
+                        display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
             <span className="app-badge app-badge-ok"><I.Check size={10} sw={3}/> Validé manuellement</span>
+            <button className="app-btn app-btn-primary app-btn-sm" disabled={saving}
+                    onClick={() => callPatch('validate', true)}>
+              <I.Check size={12} sw={3}/> Enregistrer les modifs
+            </button>
+          </div>
+        )}
+
+        {/* Ticket auto-validé (good) : badge + bouton pour sauvegarder une correction */}
+        {mode === 'good' && (
+          <div style={{ padding: '12px 16px', borderTop: '1px solid var(--app-line)',
+                        display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="app-badge app-badge-ok"><I.Check size={10} sw={3}/> Auto-validé</span>
+            <button className="app-btn app-btn-primary app-btn-sm" disabled={saving}
+                    onClick={() => callPatch('validate', true)}>
+              <I.Check size={12} sw={3}/> Enregistrer les modifs
+            </button>
           </div>
         )}
       </div>
@@ -788,11 +929,12 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
   );
 };
 
-const Field = ({ label, value, onChange, readOnly, mono }) => (
+const Field = ({ label, value, onChange, onBlur, readOnly, mono }) => (
   <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
     <span className="caption" style={{ fontSize: 11 }}>{label}</span>
     <input type="text" value={value ?? ''} readOnly={readOnly}
            onChange={(e) => onChange(e.target.value)}
+           onBlur={onBlur ? () => onBlur() : undefined}
            style={{
              width: '100%', boxSizing: 'border-box',
              background: readOnly ? 'transparent' : 'var(--app-card-hi)',
@@ -1024,4 +1166,167 @@ const SummaryRow = ({ label, value, mono, bold }) => (
   </div>
 );
 
-Object.assign(window, { OcrUpload, OcrValidation, OcrExport });
+// ─── JobToast : indicateur flottant bas-droite, persiste entre les pages ─
+const JobToast = ({ job, onOpen, onDismiss }) => {
+  // Injecter keyframes (réutilise celles déjà créées par ProcessingOverlay si présentes)
+  React.useEffect(() => {
+    if (document.getElementById('enop-processing-keyframes')) return;
+    const s = document.createElement('style');
+    s.id = 'enop-processing-keyframes';
+    s.textContent = `
+      @keyframes enop-shimmer {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+      }
+      @keyframes enop-pulse-bar {
+        0%, 100% { opacity: 0.85; }
+        50%      { opacity: 1; }
+      }
+      @keyframes enop-dots {
+        0%, 20% { opacity: 0; }
+        40%     { opacity: 1; }
+        100%    { opacity: 0; }
+      }
+      @keyframes enop-toast-in {
+        from { transform: translateY(20px); opacity: 0; }
+        to   { transform: translateY(0); opacity: 1; }
+      }
+    `;
+    document.head.appendChild(s);
+  }, []);
+
+  const isActive = job.status === 'pending' || job.status === 'running';
+  const isDone = job.status === 'done';
+  const isFailed = job.status === 'failed';
+
+  const stepLabel = {
+    upload: 'Réception du fichier',
+    render: 'Rendu des pages',
+    ai: 'Extraction IA des tickets',
+    filter: 'Validation et déduplication',
+    export: 'Génération des fichiers',
+  }[job.step] || 'Analyse en cours';
+
+  const pct = Math.max(2, job.progress || 0);
+
+  // Couleur dynamique
+  let borderColor = 'var(--accent-line)';
+  let accent = 'var(--accent)';
+  let title = stepLabel;
+  if (isDone) {
+    borderColor = 'rgba(0,229,180,0.5)';
+    title = 'Analyse terminée';
+  } else if (isFailed) {
+    borderColor = 'rgba(232,93,93,0.5)';
+    accent = '#e85d5d';
+    title = 'Échec de l\'analyse';
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', bottom: 20, right: 20, zIndex: 9000,
+      width: 340,
+      animation: 'enop-toast-in 0.3s ease-out',
+    }}>
+      <div style={{
+        background: 'var(--app-card-hi, #0f1f1d)',
+        border: '1px solid ' + borderColor,
+        borderRadius: 12,
+        padding: '14px 16px',
+        boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 10, fontWeight: 600, letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              color: accent,
+              fontFamily: 'JetBrains Mono, monospace',
+              marginBottom: 4,
+            }}>
+              {isActive && (
+                <>
+                  Agent saisie
+                  <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0s' }}>.</span>
+                  <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0.2s' }}>.</span>
+                  <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0.4s' }}>.</span>
+                </>
+              )}
+              {isDone && <><I.Check size={11} sw={3} stroke={accent} /> Terminé</>}
+              {isFailed && <><I.AlertCircle size={11} stroke={accent} /> Erreur</>}
+            </div>
+            <div style={{
+              fontSize: 13, fontWeight: 500, color: 'var(--text)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {title}
+            </div>
+            {isActive && job.detail && (
+              <div className="caption" style={{ marginTop: 2, fontSize: 11 }}>
+                {job.detail}
+              </div>
+            )}
+            {isFailed && job.error && (
+              <div className="caption" style={{ marginTop: 2, fontSize: 11, color: '#e85d5d' }}>
+                {String(job.error).slice(0, 80)}
+              </div>
+            )}
+          </div>
+
+          {/* Bouton fermer (uniquement quand done/failed pour ne pas tuer un run actif) */}
+          {!isActive && (
+            <button onClick={onDismiss} title="Fermer" style={{
+              background: 'transparent', border: 0, cursor: 'pointer',
+              color: 'var(--text-mute)', padding: 2,
+            }}>
+              <I.X size={14} />
+            </button>
+          )}
+        </div>
+
+        {isActive && (
+          <div style={{
+            position: 'relative',
+            height: 4, background: 'var(--app-line)', borderRadius: 999,
+            overflow: 'hidden', marginTop: 10,
+          }}>
+            <div style={{
+              height: '100%', background: 'var(--accent)',
+              width: `${pct}%`,
+              transition: 'width 0.4s ease',
+              animation: 'enop-pulse-bar 1.8s ease-in-out infinite',
+            }}/>
+            <div style={{
+              position: 'absolute', inset: 0,
+              background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 50%, transparent 100%)',
+              animation: 'enop-shimmer 1.6s linear infinite',
+              pointerEvents: 'none',
+            }}/>
+          </div>
+        )}
+
+        {isActive && (
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            marginTop: 6,
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+            color: 'var(--text-dim)',
+          }}>
+            <span style={{ color: accent, fontWeight: 500 }}>{job.progress || 0}%</span>
+            <span>~{Math.floor((Date.now() - job.startedAt) / 1000)}s écoulées</span>
+          </div>
+        )}
+
+        {isDone && (
+          <button onClick={onOpen} className="app-btn app-btn-primary app-btn-sm"
+                  style={{ width: '100%', marginTop: 10, justifyContent: 'center' }}>
+            Voir les résultats <I.ArrowRight size={12}/>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+Object.assign(window, { OcrUpload, OcrValidation, OcrExport, JobToast });

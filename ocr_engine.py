@@ -725,6 +725,7 @@ def _save_queue_data(run_id: str, queue: dict) -> None:
 
 
 def update_ticket_in_queue(run_id: str, ticket_id: str, updates: dict) -> bool:
+    """Met a jour un ticket dans la queue review (doubtful)."""
     queue = load_review_queue(run_id)
     if not queue:
         return False
@@ -743,6 +744,36 @@ def update_ticket_in_queue(run_id: str, ticket_id: str, updates: dict) -> bool:
     queue['stats']['duplicate'] = sum(1 for t in queue['tickets'] if t.get('review_status') == 'duplicate')
     _save_queue_data(run_id, queue)
     return True
+
+
+def update_ticket_in_auto_validated(run_id: str, ticket_id: str, updates: dict) -> bool:
+    """Met a jour un ticket dans auto_validated.json (tickets 'good')."""
+    path = REVIEW_BASE / run_id / 'auto_validated.json'
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return False
+    tickets = data.get('tickets', [])
+    found = False
+    for ticket in tickets:
+        if ticket.get('ticket_id') == ticket_id:
+            ticket.update(updates)
+            ticket['updated_at'] = datetime.utcnow().isoformat()
+            found = True
+            break
+    if not found:
+        return False
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    return True
+
+
+def update_ticket_anywhere(run_id: str, ticket_id: str, updates: dict) -> bool:
+    """Cherche le ticket dans queue (doubtful) PUIS auto_validated (good)."""
+    if update_ticket_in_queue(run_id, ticket_id, updates):
+        return True
+    return update_ticket_in_auto_validated(run_id, ticket_id, updates)
 
 
 # ===================================================================
