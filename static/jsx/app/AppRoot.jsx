@@ -1,16 +1,19 @@
-// app/AppRoot.jsx — top-level app: auth state + router
+// app/AppRoot.jsx — top-level app: auth state + router + job polling background
 
 function AppRoot() {
-  // user = null pendant le chargement, false si non auth, objet si auth
   const [user, setUser] = React.useState(null);
   const [authChecked, setAuthChecked] = React.useState(false);
   const [route, setRoute] = React.useState('dashboard');
   const [file, setFile] = React.useState(null);
   const [runResult, setRunResult] = React.useState(null);
 
+  // Job en cours (lance par OcrUpload, polled ici dans AppRoot pour persister entre les pages)
+  // job = null | { jobId, dbRunId, status, progress, step, detail, result, error, startedAt }
+  const [job, setJob] = React.useState(null);
+
   React.useEffect(() => { document.body.classList.add('app-body'); }, []);
 
-  // Au mount : récupère l'utilisateur courant via /api/me
+  // /api/me au mount
   React.useEffect(() => {
     fetch('/api/me', { credentials: 'same-origin' })
       .then(r => r.ok ? r.json() : null)
@@ -21,12 +24,9 @@ function AppRoot() {
             ? (data.first_name[0] + data.last_name[0]).toUpperCase()
             : (name.split(/[\s@]/).filter(Boolean).map(s => s[0]).join('').slice(0, 2).toUpperCase());
           setUser({
-            id: data.id,
-            name,
-            initials,
+            id: data.id, name, initials,
             email: data.email,
-            org: data.org_name,
-            org_id: data.org_id,
+            org: data.org_name, org_id: data.org_id,
             role: data.role,
           });
         } else {
@@ -37,12 +37,40 @@ function AppRoot() {
       .finally(() => setAuthChecked(true));
   }, []);
 
-  // Appelé après login/signup React (rarement utilisé : Flask gère le redirect via window.location)
-  const onAuth = () => { window.location.href = '/'; };
+  // Polling persistant du job actif (continue même quand l'utilisateur change de page)
+  React.useEffect(() => {
+    if (!job || !job.jobId) return;
+    if (job.status === 'done' || job.status === 'failed') return;
 
-  const onLogout = () => {
-    window.location.href = '/logout';
-  };
+    let cancelled = false;
+    const POLL_MS = 2000;
+
+    const tick = async () => {
+      try {
+        const r = await fetch(`/api/jobs/${job.jobId}`, { credentials: 'same-origin' });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (cancelled) return;
+        setJob(j => j ? {
+          ...j,
+          status: data.status,
+          progress: data.progress || 0,
+          step: data.step || j.step,
+          detail: data.detail || '',
+          result: data.result || j.result,
+          error: data.error || j.error,
+        } : null);
+      } catch {}
+    };
+
+    // Premier tick rapide
+    tick();
+    const id = setInterval(tick, POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [job?.jobId, job?.status]);
+
+  const onAuth = () => { window.location.href = '/'; };
+  const onLogout = () => { window.location.href = '/logout'; };
 
   const onNavigate = (id) => {
     if (id === 'ocr') id = 'ocr-upload';
@@ -50,7 +78,27 @@ function AppRoot() {
     window.scrollTo(0, 0);
   };
 
-  // Chargement initial : éviter le flash de l'écran auth
+  // Appelé par OcrUpload quand l'API /api/process a renvoyé { job_id, run_id }
+  const startJob = ({ jobId, dbRunId }) => {
+    setJob({
+      jobId, dbRunId,
+      status: 'pending', progress: 0, step: 'upload', detail: '',
+      result: null, error: null,
+      startedAt: Date.now(),
+    });
+  };
+
+  // Quand l'utilisateur clique sur le toast (run terminé) → ouvre les résultats
+  const openJobResults = () => {
+    if (!job || job.status !== 'done' || !job.result) return;
+    setRunResult(job.result);
+    setJob(null);  // toast se ferme
+    setFile(null);
+    onNavigate('ocr-validate');
+  };
+
+  const dismissJob = () => setJob(null);
+
   if (!authChecked) {
     return (
       <div style={{
@@ -65,11 +113,8 @@ function AppRoot() {
     );
   }
 
-  // Pas authentifié : la session a expiré pendant l'utilisation
-  // (en pratique, Flask redirige vers /login avant qu'on arrive ici)
   if (!user) return <AuthScreen onAuth={onAuth} />;
 
-  // Shell config per route
   let activeNav = 'dashboard';
   let agentBadge = null;
   let breadcrumb = null;
@@ -86,29 +131,38 @@ function AppRoot() {
     breadcrumb = [{ label: 'Agent Saisie', onClick: () => onNavigate('ocr-upload') }, { label: stepLabel }];
   }
 
-  return (
-    <Shell active={activeNav} agentBadge={agentBadge} breadcrumb={breadcrumb}
-           onNavigate={onNavigate} user={user} onLogout={onLogout}>
-      {route === 'dashboard' && <Dashboard onNavigate={onNavigate} user={user} />}
-      {route === 'clients'   && <ClientsList onNavigate={onNavigate} />}
-      {route === 'dossiers'  && <DossiersList onNavigate={onNavigate} />}
-      {route === 'history'   && <RunsHistory onNavigate={onNavigate} setRunResult={setRunResult} />}
-      {route === 'settings'  && <Settings user={user} />}
+  // Un job est en cours si on a un job pending/running
+  const jobActive = job && (job.status === 'pending' || job.status === 'running');
 
-      {route === 'ocr-upload' && (
-        <OcrUpload onNext={() => onNavigate('ocr-validate')}
-                   file={file} setFile={setFile}
-                   setRunResult={setRunResult} />
-      )}
-      {route === 'ocr-validate' && (
-        <OcrValidation onNext={() => onNavigate('ocr-export')}
-                       onBack={() => onNavigate(runResult?._reopened ? 'history' : 'ocr-upload')}
-                       runResult={runResult} />
-      )}
-      {route === 'ocr-export' && (
-        <OcrExport onNavigate={onNavigate} runResult={runResult} />
-      )}
-    </Shell>
+  return (
+    <>
+      <Shell active={activeNav} agentBadge={agentBadge} breadcrumb={breadcrumb}
+             onNavigate={onNavigate} user={user} onLogout={onLogout}>
+        {route === 'dashboard' && <Dashboard onNavigate={onNavigate} user={user} />}
+        {route === 'clients'   && <ClientsList onNavigate={onNavigate} />}
+        {route === 'dossiers'  && <DossiersList onNavigate={onNavigate} />}
+        {route === 'history'   && <RunsHistory onNavigate={onNavigate} setRunResult={setRunResult} />}
+        {route === 'settings'  && <Settings user={user} />}
+
+        {route === 'ocr-upload' && (
+          <OcrUpload onNext={() => onNavigate('ocr-validate')}
+                     file={file} setFile={setFile}
+                     setRunResult={setRunResult}
+                     startJob={startJob}
+                     jobActive={jobActive} />
+        )}
+        {route === 'ocr-validate' && (
+          <OcrValidation onNext={() => onNavigate('ocr-export')}
+                         onBack={() => onNavigate(runResult?._reopened ? 'history' : 'ocr-upload')}
+                         runResult={runResult} />
+        )}
+        {route === 'ocr-export' && (
+          <OcrExport onNavigate={onNavigate} runResult={runResult} />
+        )}
+      </Shell>
+
+      {job && <JobToast job={job} onOpen={openJobResults} onDismiss={dismissJob} />}
+    </>
   );
 }
 
