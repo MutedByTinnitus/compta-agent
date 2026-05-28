@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Enop · L'agent IA comptable qui lit vos tickets</title>
+<meta name="description" content="Enop.ai transforme automatiquement vos tickets et factures en écritures comptables prêtes pour Sage, Cegid et autres logiciels. Pour cabinets d'expertise comptable.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,500;1,400;1,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/enop-tokens-new.css') }}" />
+<link rel="icon" href="{{ url_for('static', filename='img/logo-enop.svg') }}" type="image/svg+xml" />
+
+<style>
+  /* Smooth scroll */
+  html { scroll-behavior: smooth; }
+  body { overflow-x: hidden; }
+
+  /* Reveal classes pour IntersectionObserver */
+  .reveal-on-scroll {
+    opacity: 0;
+    transform: translateY(28px);
+    transition: opacity 0.9s var(--ease), transform 0.9s var(--ease);
+  }
+  .reveal-on-scroll.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Mobile fallback pour grilles */
+  @media (max-width: 900px) {
+    section [style*="grid-template-columns: repeat(3"],
+    section [style*="grid-template-columns: repeat(4"],
+    section [style*="grid-template-columns: 320px"],
+    section [style*="grid-template-columns: 1fr 2fr"] {
+      grid-template-columns: 1fr !important;
+    }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/Nav.jsx') }}"></script>
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/Hero.jsx') }}"></script>
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/LiveDemo.jsx') }}"></script>
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/Manifesto.jsx') }}"></script>
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/Sections1.jsx') }}"></script>
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/Sections2.jsx') }}"></script>
+<script type="text/babel" data-presets="react" src="{{ url_for('static', filename='jsx/landing/App.jsx') }}"></script>
+
+<script>
+  // IntersectionObserver pour les effets de reveal au scroll
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      const obs = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            e.target.classList.add('visible');
+            obs.unobserve(e.target);
+          }
+        });
+      }, { threshold: 0.12 });
+      document.querySelectorAll('section > div > div, section > div > h2').forEach(el => {
+        el.classList.add('reveal-on-scroll');
+        obs.observe(el);
+      });
+    }, 800);
+  });
+</script>
+</body>
+</html>

@@ -85,7 +85,8 @@
       <input type="text" id="siret" name="siret" pattern="[0-9\s]{14,17}" autocomplete="off">
 
       <label for="email">Email professionnel *</label>
-      <input type="email" id="email" name="email" required autocomplete="email">
+      <input type="email" id="email" name="email" required autocomplete="email"
+             value="{{ request.args.get('email', '') }}">
 
       <label for="password">Mot de passe *</label>
       <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">

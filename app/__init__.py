@@ -49,6 +49,14 @@ def create_app(config_override=None):
     # Routes principales : / et /legacy
     @app.route('/')
     def index():
+        """Landing page publique. Si déjà loggué, on bascule vers l'app."""
+        if current_user.is_authenticated:
+            return redirect(url_for('app_dashboard'))
+        return render_template('landing.html')
+
+    @app.route('/app')
+    def app_dashboard():
+        """L'app loggée (anciennement /). Nécessite une session valide."""
         if not current_user.is_authenticated:
             return redirect(url_for('auth.login'))
         from .auth.security import generate_csrf_token

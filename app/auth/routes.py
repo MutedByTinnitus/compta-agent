@@ -176,7 +176,7 @@ def logout():
                user_id=current_user.id)
     db.session.commit()
     logout_user()
-    return redirect(url_for('auth.login'))
+    return redirect(url_for('index'))  # retour landing publique
 
 
 # ── /api/me ───────────────────────────────────────────────────────
