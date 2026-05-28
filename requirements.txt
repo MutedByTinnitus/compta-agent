@@ -8,6 +8,9 @@ python-dotenv==1.1.0
 google-auth==2.38.0
 Pillow==11.2.1
 json-repair>=0.30.0
+# Computer Vision pour pré-segmentation des tickets multi par page
+opencv-python-headless>=4.10
+numpy>=1.26
 
 # DB + auth
 SQLAlchemy>=2.0,<3.0

@@ -985,6 +985,124 @@ def render_page_as_png(pdf_bytes, dpi=300):
     return png_bytes, png_b64
 
 
+def detect_ticket_regions(png_bytes, min_area_ratio=0.02, max_area_ratio=0.85):
+    """Détecte les zones de tickets dans une image de page A4 (fond clair, tickets foncés).
+
+    Strategie :
+    1. Convertir en niveaux de gris
+    2. Threshold inverse adaptatif (tickets = blanc sur fond noir après inversion)
+    3. Dilater pour fusionner les caractères en blocs cohérents
+    4. Trouver les contours, filtrer par taille et ratio d'aspect
+
+    Args:
+        png_bytes: image PNG en bytes
+        min_area_ratio: rejette les régions < 2% de la page (bruit)
+        max_area_ratio: rejette les régions > 85% (= page entière, pas utile)
+
+    Returns:
+        list of (x, y, w, h) tuples en pixels, triés top-to-bottom, left-to-right.
+        [] si rien détecté (l'appelant doit fallback sur page entière).
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as e:
+        logger.warning(f"[CV] opencv-python non installé, segmentation skipée : {e}")
+        return []
+
+    try:
+        # Décoder le PNG en image numpy
+        arr = np.frombuffer(png_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            logger.warning("[CV] decode image échoué")
+            return []
+
+        h_img, w_img = img.shape[:2]
+        total_area = h_img * w_img
+
+        # Niveaux de gris + flou léger pour réduire le bruit textuel
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        # Threshold inverse adaptatif (tickets foncés/textes → blanc, fond clair → noir)
+        # On utilise un seuil global Otsu, plus stable qu'adaptatif pour des tickets imprimés
+        _, thresh = cv2.threshold(
+            blurred, 0, 255,
+            cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
+        )
+
+        # Dilatation horizontale + verticale pour fusionner les caractères en blocs
+        # Kernel large pour grouper les lignes d'un même ticket
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+        dilated = cv2.dilate(thresh, kernel, iterations=2)
+
+        # Trouver les contours externes uniquement
+        contours, _ = cv2.findContours(
+            dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        regions = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            area = w * h
+            ratio = area / total_area
+
+            # Filtre 1 : taille raisonnable
+            if ratio < min_area_ratio or ratio > max_area_ratio:
+                continue
+
+            # Filtre 2 : ratio d'aspect raisonnable (un ticket est plutôt vertical, mais on
+            # accepte large pour les factures horizontales). Rejette les bandes (numéros de page).
+            aspect = w / h if h > 0 else 0
+            if aspect < 0.15 or aspect > 6.0:
+                continue
+
+            regions.append((x, y, w, h))
+
+        # Tri lecture humaine : haut → bas, puis gauche → droite (tolérance sur Y)
+        def sort_key(r):
+            x, y, w, h = r
+            # Bucket Y par tranches de 8% de la hauteur pour grouper les lignes
+            y_bucket = y // (h_img // 12 or 1)
+            return (y_bucket, x)
+        regions.sort(key=sort_key)
+
+        logger.info(f"[CV] {len(regions)} ticket(s) détecté(s) sur page {w_img}x{h_img}")
+        return regions
+
+    except Exception as e:
+        logger.warning(f"[CV] detect_ticket_regions échoué : {e}")
+        return []
+
+
+def crop_image_region(png_bytes, region, padding_px=20):
+    """Crop une région (x, y, w, h) d'une image PNG, retourne (png_bytes, png_b64).
+
+    padding_px : marge ajoutée autour pour ne pas couper le texte au bord.
+    """
+    import cv2
+    import numpy as np
+
+    arr = np.frombuffer(png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    h_img, w_img = img.shape[:2]
+
+    x, y, w, h = region
+    x0 = max(0, x - padding_px)
+    y0 = max(0, y - padding_px)
+    x1 = min(w_img, x + w + padding_px)
+    y1 = min(h_img, y + h + padding_px)
+
+    crop = img[y0:y1, x0:x1]
+    ok, buf = cv2.imencode('.png', crop)
+    if not ok:
+        raise RuntimeError("cv2.imencode échoué")
+    crop_bytes = buf.tobytes()
+    crop_b64 = base64.b64encode(crop_bytes).decode('utf-8')
+    return crop_bytes, crop_b64, (x0, y0, x1, y1)
+
+
 def call_gemini_vision(png_b64, extra_prompt=None):
     """Appel Gemini 3 Flash Vision sur une image PNG base64.
     extra_prompt : texte ajouté au system_instruction (pour retry avec contraintes renforcées).
@@ -2276,6 +2394,134 @@ def _majority_vote_tickets_UNUSED(runs, filename=""):  # conservé pour référe
     }
 
 
+def _extract_with_presegmentation(page_png_bytes, regions, filename, ocr_text):
+    """Extraction Gemini ticket par ticket sur images pré-segmentées.
+
+    Pour chaque région détectée par OpenCV :
+    - crop l'image
+    - appelle Gemini Vision sur ce crop unique
+    - parse le résultat
+    - reconstruit le bbox absolu (page entière) pour le crop final qui sera utilisé en UI
+
+    En cas d'échec sur 1 ticket, on continue avec les autres.
+
+    Returns : dict format identique à analyze_ticket_with_retry, ou None si échec total.
+    """
+    import cv2
+    import numpy as np
+
+    arr = np.frombuffer(page_png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    h_img, w_img = img.shape[:2]
+
+    all_tickets = []
+    failures = 0
+
+    for i, region in enumerate(regions):
+        try:
+            crop_bytes, crop_b64, (cx0, cy0, cx1, cy1) = crop_image_region(
+                page_png_bytes, region, padding_px=20
+            )
+            crop_kb = len(crop_bytes) // 1024
+            logger.info(f"  [Pre-seg] {filename} ticket {i+1}/{len(regions)} "
+                        f"crop {cx1-cx0}x{cy1-cy0} ({crop_kb}KB)")
+
+            # Appel Gemini sur le crop
+            raw = call_gemini_vision(crop_b64)
+            result = clean_json_response(raw, f"{filename}#crop{i+1}")
+            tickets = result.get('tickets', [])
+
+            if not tickets:
+                logger.warning(f"  [Pre-seg] crop {i+1}: 0 ticket extrait")
+                failures += 1
+                continue
+
+            # Si Gemini extrait plusieurs tickets sur 1 crop (cas rare où la région
+            # OpenCV contient 2 tickets collés), on les garde tous.
+            for t in tickets:
+                # Reconstruction du bbox dans l'image page entière (échelle 0-1000)
+                # Le bbox renvoyé par Gemini est par rapport au CROP, on doit le projeter sur la page.
+                local_bbox = t.get('bbox')
+                if local_bbox and len(local_bbox) == 4:
+                    try:
+                        lx0, ly0, lx1, ly1 = [float(v) for v in local_bbox]
+                        # bbox local en 0-1000 → coords absolues en pixels
+                        crop_w = cx1 - cx0
+                        crop_h = cy1 - cy0
+                        abs_x0 = cx0 + (lx0 / 1000) * crop_w
+                        abs_y0 = cy0 + (ly0 / 1000) * crop_h
+                        abs_x1 = cx0 + (lx1 / 1000) * crop_w
+                        abs_y1 = cy0 + (ly1 / 1000) * crop_h
+                        # Reprojection en 0-1000 sur la page entière
+                        t['bbox'] = [
+                            round(abs_x0 / w_img * 1000),
+                            round(abs_y0 / h_img * 1000),
+                            round(abs_x1 / w_img * 1000),
+                            round(abs_y1 / h_img * 1000),
+                        ]
+                    except Exception:
+                        # Si reprojection échoue, on prend simplement la région CV
+                        t['bbox'] = [
+                            round(cx0 / w_img * 1000),
+                            round(cy0 / h_img * 1000),
+                            round(cx1 / w_img * 1000),
+                            round(cy1 / h_img * 1000),
+                        ]
+                else:
+                    # Pas de bbox du LLM → on utilise la région CV
+                    t['bbox'] = [
+                        round(cx0 / w_img * 1000),
+                        round(cy0 / h_img * 1000),
+                        round(cx1 / w_img * 1000),
+                        round(cy1 / h_img * 1000),
+                    ]
+                all_tickets.append(t)
+
+            logger.info(f"  [Pre-seg] crop {i+1}: {len(tickets)} ticket(s) extrait(s)")
+
+        except Exception as e:
+            logger.warning(f"  [Pre-seg] crop {i+1} échoué : {e}")
+            failures += 1
+            continue
+
+    if not all_tickets:
+        logger.warning(f"  [Pre-seg] AUCUN ticket extrait sur {len(regions)} régions")
+        return None
+
+    # Garantir scan_quality + fallback bbox manquant
+    for t in all_tickets:
+        sq = (t.get('scan_quality') or '').lower().strip()
+        if sq not in _VALID_SCAN_QUALITY:
+            t['scan_quality'] = fallback_scan_quality(t)
+            t.setdefault('scan_quality_reason', 'Qualité déduite')
+
+    # Cross-check OCR sur les montants si disponible
+    if ocr_text:
+        all_tickets = cross_validate_against_ocr(all_tickets, ocr_text)
+
+    confidence_global = sum(
+        float(t.get('confidence', 0.9) or 0.9) for t in all_tickets
+    ) / max(len(all_tickets), 1)
+
+    return {
+        'exploitable': True,
+        'inventaire': {
+            'total_detectes': len(all_tickets),
+            'lisibles': sum(1 for t in all_tickets if float(t.get('confidence', 0) or 0) >= 0.80),
+            'partiels': sum(1 for t in all_tickets if 0.50 <= float(t.get('confidence', 0) or 0) < 0.80),
+            'illisibles': sum(1 for t in all_tickets if float(t.get('confidence', 0) or 0) < 0.50),
+        },
+        'tickets': all_tickets,
+        'confidence': round(confidence_global, 2),
+        '_ocr_text': ocr_text,
+        '_pre_segmented': True,
+        '_regions_count': len(regions),
+        '_failures': failures,
+    }
+
+
 def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
     """Pipeline Vision : PDF → PNG 300dpi → Gemini Vision → [Judge Claude si besoin]."""
 
@@ -2315,6 +2561,34 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
             logger.info(f"  [OCR cross-check] {len(ocr_text)} chars")
         except Exception as e:
             logger.warning(f"  [OCR] Erreur (non-bloquant): {e}")
+
+    # 3.5. PRÉ-SEGMENTATION CV (optionnelle, désactivable via env var)
+    # Si la page contient plusieurs tickets distincts, on envoie chaque crop
+    # individuellement à Gemini → évite les troncatures et améliore la qualité.
+    cv_preseg_enabled = os.environ.get('CV_PRESEG_ENABLED', 'true').lower() == 'true'
+    if cv_preseg_enabled:
+        regions = detect_ticket_regions(png_bytes)
+        if len(regions) >= 2:
+            logger.info(f"  [Router] {len(regions)} régions détectées → mode pré-segmenté")
+            result = _extract_with_presegmentation(
+                png_bytes, regions, filename, ocr_text
+            )
+            if result and result.get('tickets'):
+                # Cache + return
+                if CACHE_ENABLED:
+                    try:
+                        cache_file.write_text(
+                            json.dumps(result, ensure_ascii=False, indent=2),
+                            encoding='utf-8'
+                        )
+                        logger.info(f"[Cache] {filename} - sauvegarde vision pre-seg ({pdf_hash[:8]})")
+                    except Exception:
+                        pass
+                return result
+            else:
+                logger.warning(f"  [Router] pre-seg échoué, fallback page entière")
+        else:
+            logger.info(f"  [Router] {len(regions)} région(s) détectée(s) → mode page entière")
 
     # 4. Extraction Vision Gemini avec retry robuste (max 2 essais) + fallback Claude
     if not GEMINI_API_KEY and not ANTHROPIC_API_KEY:
