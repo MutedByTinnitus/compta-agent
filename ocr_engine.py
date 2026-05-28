@@ -84,67 +84,101 @@ PRICING_USD = {
 }
 USD_TO_EUR = 0.92
 
-_cost_local = threading.local()
+# Cost tracking state — partagé entre tous les threads d'un même run.
+# (Avant on utilisait threading.local() qui cassait avec ThreadPoolExecutor :
+# les workers ne voyaient pas le state initialisé par le thread parent.)
+# On utilise un namespace simple protégé par un lock. On suppose UN run actif
+# à la fois dans le process Flask (les jobs Portainer sont séquentiels).
+_cost_lock = threading.Lock()
+
+
+class _CostState:
+    def __init__(self):
+        self.run_id = None
+        self.start_time = None
+        self.gemini_calls = 0
+        self.gemini_in = 0
+        self.gemini_out = 0
+        self.claude_calls = 0
+        self.claude_judge = 0
+        self.claude_fb = 0
+        self.claude_in = 0
+        self.claude_out = 0
+        self.docai_pages = 0
+        self.total_pages = 0
+        self.tickets_nb = 0
+        self.filename = None
+
+
+_cost_local = _CostState()
+
 
 def cost_tracking_start(run_id: str = None):
-    _cost_local.run_id        = run_id or datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-    _cost_local.start_time    = datetime.utcnow()
-    _cost_local.gemini_calls  = 0
-    _cost_local.gemini_in     = 0
-    _cost_local.gemini_out    = 0
-    _cost_local.claude_calls  = 0
-    _cost_local.claude_judge  = 0
-    _cost_local.claude_fb     = 0
-    _cost_local.claude_in     = 0
-    _cost_local.claude_out    = 0
-    _cost_local.docai_pages   = 0
-    _cost_local.total_pages   = 0
-    _cost_local.tickets_nb    = 0
-    _cost_local.filename      = None
+    with _cost_lock:
+        _cost_local.run_id        = run_id or datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        _cost_local.start_time    = datetime.utcnow()
+        _cost_local.gemini_calls  = 0
+        _cost_local.gemini_in     = 0
+        _cost_local.gemini_out    = 0
+        _cost_local.claude_calls  = 0
+        _cost_local.claude_judge  = 0
+        _cost_local.claude_fb     = 0
+        _cost_local.claude_in     = 0
+        _cost_local.claude_out    = 0
+        _cost_local.docai_pages   = 0
+        _cost_local.total_pages   = 0
+        _cost_local.tickets_nb    = 0
+        _cost_local.filename      = None
 
 def _ct_init():
-    if not hasattr(_cost_local, 'run_id'):
+    if _cost_local.run_id is None:
         cost_tracking_start()
 
 def track_gemini_usage(input_tokens: int, output_tokens: int):
     try:
         _ct_init()
-        _cost_local.gemini_calls += 1
-        _cost_local.gemini_in    += int(input_tokens  or 0)
-        _cost_local.gemini_out   += int(output_tokens or 0)
+        with _cost_lock:
+            _cost_local.gemini_calls += 1
+            _cost_local.gemini_in    += int(input_tokens  or 0)
+            _cost_local.gemini_out   += int(output_tokens or 0)
     except Exception as e:
         logger.warning(f"[Cost] track_gemini_usage: {e}")
 
 def track_claude_usage(input_tokens: int, output_tokens: int, role: str = "judge"):
     try:
         _ct_init()
-        _cost_local.claude_calls += 1
-        _cost_local.claude_in    += int(input_tokens  or 0)
-        _cost_local.claude_out   += int(output_tokens or 0)
-        if role == "judge":    _cost_local.claude_judge += 1
-        elif role == "fallback": _cost_local.claude_fb  += 1
+        with _cost_lock:
+            _cost_local.claude_calls += 1
+            _cost_local.claude_in    += int(input_tokens  or 0)
+            _cost_local.claude_out   += int(output_tokens or 0)
+            if role == "judge":    _cost_local.claude_judge += 1
+            elif role == "fallback": _cost_local.claude_fb  += 1
     except Exception as e:
         logger.warning(f"[Cost] track_claude_usage: {e}")
 
 def track_docai_page():
     try:
         _ct_init()
-        _cost_local.docai_pages += 1
+        with _cost_lock:
+            _cost_local.docai_pages += 1
     except Exception as e:
         logger.warning(f"[Cost] track_docai_page: {e}")
 
 def track_run_metadata(filename=None, pages_total=None, tickets=None):
     try:
         _ct_init()
-        if filename    is not None: _cost_local.filename    = filename
-        if pages_total is not None: _cost_local.total_pages = pages_total
-        if tickets     is not None: _cost_local.tickets_nb  = tickets
+        with _cost_lock:
+            if filename    is not None: _cost_local.filename    = filename
+            if pages_total is not None: _cost_local.total_pages = pages_total
+            if tickets     is not None: _cost_local.tickets_nb  = tickets
     except Exception as e:
         logger.warning(f"[Cost] track_run_metadata: {e}")
 
 def cost_tracking_finalize() -> dict:
     try:
         _ct_init()
+        # Note : pas besoin de _cost_lock ici car finalize est appele apres que
+        # tous les workers ThreadPoolExecutor ont termine (with executor: ... join implicite).
         g_usd = (
             (_cost_local.gemini_in  / 1000) * PRICING_USD['gemini_flash_input_per_1k'] +
             (_cost_local.gemini_out / 1000) * PRICING_USD['gemini_flash_output_per_1k']

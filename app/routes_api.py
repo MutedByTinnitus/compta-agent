@@ -284,7 +284,7 @@ def _persist_run_completion(db_run_id, results):
         run.excel_path = output_files['excel'].get('name')
 
     cost = results.get('cost', {})
-    if cost.get('total_eur'):
+    if cost.get('total_eur') is not None:
         try:
             run.cost_eur = float(cost['total_eur'])
         except (ValueError, TypeError):
