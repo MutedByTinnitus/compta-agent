@@ -168,6 +168,108 @@ def _get_or_create_legacy_user(password):
 
 
 # ── LOGOUT ────────────────────────────────────────────────────────
+# ── PASSWORD RESET ────────────────────────────────────────────────
+@auth_bp.route('/reset-password/request', methods=['GET', 'POST'])
+def reset_password_request():
+    """Etape 1 : l'utilisateur saisit son email.
+    On genere un token, on logue l'URL complete (pas d'email en beta).
+    On retourne TOUJOURS le meme message (anti-enumeration d'emails)."""
+    if request.method == 'GET':
+        return render_template('reset_password_request.html')
+
+    email = (request.form.get('email') or '').strip().lower()
+    if not email:
+        return render_template('reset_password_request.html',
+                               error='Email requis'), 400
+
+    user = db.session.query(User).filter(
+        User.email == email, User.is_active.is_(True)
+    ).first()
+
+    if user:
+        from .security import generate_reset_token, hash_reset_token
+        from ..models.password_reset import PasswordResetToken
+        from datetime import datetime, timedelta
+
+        # Invalider les anciens tokens non-utilises de ce user
+        old = db.session.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        ).all()
+        for t in old:
+            t.used_at = datetime.utcnow()
+
+        token = generate_reset_token()
+        prt = PasswordResetToken(
+            user_id=user.id,
+            token_hash=hash_reset_token(token),
+            expires_at=datetime.utcnow() + timedelta(hours=1),
+        )
+        db.session.add(prt)
+        _log_audit('password.reset.request', user_id=user.id,
+                   org_id=user.organization_id,
+                   meta={'email': email})
+        db.session.commit()
+
+        # Log l'URL complete (visible par toi seulement dans Portainer logs)
+        reset_url = url_for('auth.reset_password_confirm',
+                            token=token, _external=True)
+        current_app.logger.warning(
+            f"[PWD-RESET] User={email} | URL={reset_url} | expire 1h"
+        )
+    else:
+        # On simule un delai pour eviter le timing attack
+        import time
+        time.sleep(0.1)
+
+    # Reponse identique dans tous les cas
+    return render_template('reset_password_request.html',
+                           success="Si l'email existe, un lien de réinitialisation a été généré.")
+
+
+@auth_bp.route('/reset-password/<token>', methods=['GET', 'POST'])
+def reset_password_confirm(token):
+    """Etape 2 : avec un token valide, l'utilisateur choisit un nouveau mot de passe."""
+    from .security import hash_reset_token
+    from ..models.password_reset import PasswordResetToken
+    from datetime import datetime
+
+    token_hash = hash_reset_token(token)
+    prt = db.session.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == token_hash,
+        PasswordResetToken.used_at.is_(None),
+        PasswordResetToken.expires_at > datetime.utcnow(),
+    ).first()
+
+    if not prt:
+        return render_template('reset_password_confirm.html',
+                               token=token,
+                               error='Lien invalide ou expiré. Demandez un nouveau lien.'), 400
+
+    if request.method == 'GET':
+        return render_template('reset_password_confirm.html', token=token)
+
+    new_pw = request.form.get('password') or ''
+    confirm = request.form.get('confirm') or ''
+
+    if len(new_pw) < 8:
+        return render_template('reset_password_confirm.html', token=token,
+                               error='Mot de passe : 8 caractères minimum'), 400
+    if new_pw != confirm:
+        return render_template('reset_password_confirm.html', token=token,
+                               error='La confirmation ne correspond pas'), 400
+
+    user = prt.user
+    user.password_hash = hash_password(new_pw)
+    prt.used_at = datetime.utcnow()
+    _log_audit('password.reset.success', user_id=user.id,
+               org_id=user.organization_id)
+    db.session.commit()
+
+    return render_template('reset_password_confirm.html', token=None,
+                           success='Mot de passe mis à jour. Vous pouvez vous connecter.')
+
+
 @auth_bp.route('/logout')
 @login_required
 def logout():

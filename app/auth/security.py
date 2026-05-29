@@ -1,4 +1,5 @@
-"""Helpers de sécurité : bcrypt, anti-bruteforce, CSRF."""
+"""Helpers de sécurité : bcrypt, anti-bruteforce, CSRF, reset tokens."""
+import hashlib
 import hmac
 import json
 import secrets
@@ -93,3 +94,16 @@ def clear_attempts(ip: str):
     if ip in attempts:
         del attempts[ip]
         _save_attempts(attempts)
+
+
+# ── Password reset tokens ─────────────────────────────────────────
+def generate_reset_token() -> str:
+    """Genere un token aleatoire URL-safe (~43 chars)."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_reset_token(token: str) -> str:
+    """Hash SHA-256 du token pour stockage en DB.
+    On ne stocke jamais le token en clair (defense en profondeur).
+    """
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
