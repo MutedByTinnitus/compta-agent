@@ -13,6 +13,14 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/enop-tokens-new.css') }}" />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/enop-app-tokens.css') }}" />
 <link rel="icon" href="{{ url_for('static', filename='img/logo-enop.svg') }}" type="image/svg+xml" />
+<style>
+  /* Responsive : sur écrans < 1280px, le panneau détail ticket repasse en 1 colonne */
+  @media (max-width: 1280px) {
+    .ticket-detail-grid {
+      grid-template-columns: 1fr !important;
+    }
+  }
+</style>
 </head>
 <body class="app-body">
 <div id="root"></div>

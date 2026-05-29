@@ -606,7 +606,7 @@ const OcrValidation = ({ onNext, onBack, runResult }) => {
           <div className="caption">Aucun ticket dans cette catégorie.</div>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 18, marginTop: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 18, marginTop: 20 }}>
           {/* Sidebar liste tickets */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 700, overflowY: 'auto' }}>
             {ticketsForTab.map(t => (
@@ -790,7 +790,7 @@ const TicketDetail = ({ ticket, runId, mode, planComptable, onUpdated }) => {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 320px) 1fr', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 280px) 1fr', gap: 16, alignItems: 'start' }}>
       {/* Image du ticket + contrôles de rotation */}
       <div className="app-card app-card-body" style={{
         background: 'var(--app-card-hi)', display: 'flex', flexDirection: 'column',
@@ -867,48 +867,70 @@ const TicketDetail = ({ ticket, runId, mode, planComptable, onUpdated }) => {
             </div>
           )}
         </div>
-        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Field label="Date"        value={fields.date}         onChange={v => setField('date', v)} readOnly={readOnly} />
-          <Field label="Fournisseur" value={fields.fournisseur}  onChange={v => setField('fournisseur', v)} readOnly={readOnly} />
-          <Row>
-            <Field label="Montant TTC" value={fields.montant_ttc}
-                   onChange={v => setAmountField('montant_ttc', v)}
-                   onBlur={() => blurAmount('montant_ttc')}
-                   readOnly={readOnly} mono />
-            <Field label="Montant HT"  value={fields.montant_ht}
-                   onChange={v => setAmountField('montant_ht', v)}
-                   onBlur={() => blurAmount('montant_ht')}
-                   readOnly={readOnly} mono />
-            <Field label="TVA"         value={fields.montant_tva}
-                   onChange={v => setAmountField('montant_tva', v)}
-                   onBlur={() => blurAmount('montant_tva')}
-                   readOnly={readOnly} mono />
-          </Row>
-          <Row>
-            <Field label="Type"          value={fields.type}          onChange={v => setField('type', v)} readOnly={readOnly} />
-            <Field label="Mode paiement" value={fields.mode_paiement} onChange={v => setField('mode_paiement', v)} readOnly={readOnly} />
-          </Row>
-
-          <Field label="N° de facture (optionnel)" value={fields.numero_facture}
-                 onChange={v => setField('numero_facture', v)} readOnly={readOnly} />
-
-          {/* Plan comptable : 4 combobox avec autocomplete */}
-          <div style={{ paddingTop: 6, borderTop: '1px dashed var(--app-line)' }}>
-            <div className="caption" style={{ fontSize: 11, marginTop: 8, marginBottom: 8, color: 'var(--text-mute)' }}>
-              Affectation comptable
-            </div>
+        <div style={{ padding: 16 }}>
+          {/* Grille 2 colonnes : Données ticket | Affectation comptable */}
+          <div className="ticket-detail-grid" style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)',
+            gap: 22,
+          }}>
+            {/* Colonne 1 — Infos ticket */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="caption" style={{
+                fontSize: 10, fontWeight: 600, letterSpacing: '0.14em',
+                textTransform: 'uppercase', color: 'var(--text-mute)',
+                fontFamily: 'JetBrains Mono, monospace',
+                marginBottom: 4,
+              }}>
+                Pièce
+              </div>
+              <Field label="Date"        value={fields.date}         onChange={v => setField('date', v)} readOnly={readOnly} />
+              <Field label="Fournisseur" value={fields.fournisseur}  onChange={v => setField('fournisseur', v)} readOnly={readOnly} />
+              <Row>
+                <Field label="Montant TTC" value={fields.montant_ttc}
+                       onChange={v => setAmountField('montant_ttc', v)}
+                       onBlur={() => blurAmount('montant_ttc')}
+                       readOnly={readOnly} mono />
+                <Field label="Montant HT"  value={fields.montant_ht}
+                       onChange={v => setAmountField('montant_ht', v)}
+                       onBlur={() => blurAmount('montant_ht')}
+                       readOnly={readOnly} mono />
+              </Row>
+              <Row>
+                <Field label="TVA"           value={fields.montant_tva}
+                       onChange={v => setAmountField('montant_tva', v)}
+                       onBlur={() => blurAmount('montant_tva')}
+                       readOnly={readOnly} mono />
+                <Field label="Mode paiement" value={fields.mode_paiement}
+                       onChange={v => setField('mode_paiement', v)} readOnly={readOnly} />
+              </Row>
+              <Row>
+                <Field label="Type"          value={fields.type}
+                       onChange={v => setField('type', v)} readOnly={readOnly} />
+                <Field label="N° facture"    value={fields.numero_facture}
+                       onChange={v => setField('numero_facture', v)} readOnly={readOnly} />
+              </Row>
+            </div>
+
+            {/* Colonne 2 — Affectation comptable */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="caption" style={{
+                fontSize: 10, fontWeight: 600, letterSpacing: '0.14em',
+                textTransform: 'uppercase', color: 'var(--text-mute)',
+                fontFamily: 'JetBrains Mono, monospace',
+                marginBottom: 4,
+              }}>
+                Affectation comptable
+              </div>
               <AccountField label="Compte de charge" value={fields.compte_charge}
                             onChange={v => setField('compte_charge', v)}
                             options={planComptable?.charges} readOnly={readOnly} />
-              <Row>
-                <AccountField label="Compte TVA" value={fields.compte_tva}
-                              onChange={v => setField('compte_tva', v)}
-                              options={planComptable?.tva} readOnly={readOnly} />
-                <AccountField label="Compte fournisseur" value={fields.compte_fournisseur}
-                              onChange={v => setField('compte_fournisseur', v)}
-                              options={planComptable?.fournisseurs} readOnly={readOnly} />
-              </Row>
+              <AccountField label="Compte TVA" value={fields.compte_tva}
+                            onChange={v => setField('compte_tva', v)}
+                            options={planComptable?.tva} readOnly={readOnly} />
+              <AccountField label="Compte fournisseur" value={fields.compte_fournisseur}
+                            onChange={v => setField('compte_fournisseur', v)}
+                            options={planComptable?.fournisseurs} readOnly={readOnly} />
               <AccountField label="Compte trésorerie" value={fields.compte_tresorerie}
                             onChange={v => setField('compte_tresorerie', v)}
                             options={planComptable?.tresorerie} readOnly={readOnly} />
@@ -916,7 +938,7 @@ const TicketDetail = ({ ticket, runId, mode, planComptable, onUpdated }) => {
           </div>
 
           {err && (
-            <div className="app-alert app-alert-danger" style={{ marginTop: 6 }}>
+            <div className="app-alert app-alert-danger" style={{ marginTop: 14 }}>
               <I.AlertCircle size={14} className="app-alert-icon"/>
               <div className="app-alert-msg">{err}</div>
             </div>
@@ -993,43 +1015,210 @@ const Row = ({ children }) => (
 
 // Combobox pour compte comptable : input texte libre + datalist HTML5 d'options.
 // L'utilisateur peut taper directement un code (606140) ou choisir dans la liste.
+// Bouton-display d'un compte comptable. Click → ouvre une modale de recherche.
+// Affiche le code en mono + le label en sous-titre.
 const AccountField = ({ label, value, onChange, options, readOnly }) => {
-  const listId = React.useId ? React.useId() : `dl-${label}`;
+  const [pickerOpen, setPickerOpen] = React.useState(false);
   const opts = options || [];
-  // Trouve le label correspondant au code actuel pour l'afficher en aide
-  const currentLabel = opts.find(o => o.code === value)?.label;
+  const current = opts.find(o => o.code === value);
 
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
-      <span className="caption" style={{ fontSize: 11 }}>
-        {label}
-        {currentLabel && (
-          <span style={{ color: 'var(--text-mute)', fontWeight: 400, marginLeft: 6 }}>
-            · {currentLabel}
-          </span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+      <span className="caption" style={{ fontSize: 11 }}>{label}</span>
+      <button type="button"
+              disabled={readOnly}
+              onClick={() => !readOnly && setPickerOpen(true)}
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                background: readOnly ? 'transparent' : 'var(--app-card-hi)',
+                border: '1px solid var(--app-line)',
+                borderRadius: 6,
+                padding: '7px 10px',
+                color: 'var(--text)',
+                fontFamily: 'inherit',
+                fontSize: 12.5,
+                outline: 'none',
+                cursor: readOnly ? 'default' : 'pointer',
+                textAlign: 'left',
+                display: 'flex', alignItems: 'center', gap: 8,
+                minHeight: 32,
+              }}>
+        {value ? (
+          <>
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontWeight: 500,
+              flexShrink: 0,
+            }}>{value}</span>
+            {current && (
+              <span style={{
+                color: 'var(--text-dim)', fontSize: 12,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                · {current.label}
+              </span>
+            )}
+          </>
+        ) : (
+          <span style={{ color: 'var(--text-mute)' }}>— Choisir un compte —</span>
         )}
-      </span>
-      <input type="text"
-             list={listId}
-             value={value ?? ''}
-             readOnly={readOnly}
-             placeholder="Code PCG (ex: 606140)"
-             onChange={(e) => onChange(e.target.value)}
-             style={{
-               width: '100%', boxSizing: 'border-box',
-               background: readOnly ? 'transparent' : 'var(--app-card-hi)',
-               border: '1px solid var(--app-line)',
-               borderRadius: 6, padding: '7px 10px',
-               color: 'var(--text)',
-               fontFamily: "'JetBrains Mono', monospace",
-               fontSize: 12.5, outline: 'none', minWidth: 0,
-             }}/>
-      <datalist id={listId}>
-        {opts.map(o => (
-          <option key={o.code} value={o.code}>{o.code} — {o.label}</option>
-        ))}
-      </datalist>
-    </label>
+        {!readOnly && (
+          <span style={{ marginLeft: 'auto', color: 'var(--text-mute)', fontSize: 11 }}>▾</span>
+        )}
+      </button>
+
+      {pickerOpen && (
+        <AccountPicker
+          title={label}
+          options={opts}
+          currentValue={value}
+          onSelect={(code) => { onChange(code); setPickerOpen(false); }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </div>
+  );
+};
+
+// Modale de recherche style Dext : barre de recherche + liste filtrable
+const AccountPicker = ({ title, options, currentValue, onSelect, onClose }) => {
+  const [query, setQuery] = React.useState('');
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    // Focus auto sur la recherche au mount
+    setTimeout(() => inputRef.current?.focus(), 50);
+    // Echap = fermer
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const q = query.trim().toLowerCase();
+  const filtered = !q ? options : options.filter(o =>
+    o.code.toLowerCase().includes(q) ||
+    o.label.toLowerCase().includes(q)
+  );
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(8,18,22,0.7)',
+      backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
+      zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: 20,
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        background: 'var(--app-card-hi, #14201b)',
+        border: '1px solid var(--app-line)',
+        borderRadius: 14, padding: 0, width: '100%', maxWidth: 540,
+        maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 16px 60px rgba(0,0,0,0.5)',
+      }}>
+        {/* En-tête : titre + close */}
+        <div style={{
+          padding: '16px 20px', borderBottom: '1px solid var(--app-line)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <div className="kicker" style={{ fontSize: 10 }}>Sélectionner</div>
+            <h3 style={{
+              fontFamily: "'Lora', Georgia, serif",
+              fontSize: 18, fontWeight: 500, margin: '4px 0 0',
+              color: 'var(--text)',
+            }}>
+              {title}
+            </h3>
+          </div>
+          <button type="button" onClick={onClose}
+                  style={{
+                    background: 'transparent', border: 0, cursor: 'pointer',
+                    color: 'var(--text-mute)', padding: 4,
+                  }}
+                  title="Fermer (Esc)">
+            <I.X size={16} />
+          </button>
+        </div>
+
+        {/* Barre de recherche */}
+        <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--app-line-soft, var(--app-line))' }}>
+          <div style={{ position: 'relative' }}>
+            <I.Search size={14} stroke="var(--text-mute)"
+                      style={{ position: 'absolute', left: 12, top: 11 }}/>
+            <input ref={inputRef}
+                   type="text"
+                   value={query}
+                   onChange={(e) => setQuery(e.target.value)}
+                   placeholder="Rechercher par code ou libellé…"
+                   style={{
+                     width: '100%', boxSizing: 'border-box',
+                     padding: '9px 12px 9px 36px',
+                     background: 'var(--app-card, #0a1410)',
+                     border: '1px solid var(--app-line)',
+                     borderRadius: 8,
+                     color: 'var(--text)',
+                     fontFamily: 'inherit',
+                     fontSize: 13, outline: 'none',
+                   }}/>
+          </div>
+        </div>
+
+        {/* Liste filtrée */}
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center' }} className="caption">
+              Aucun compte ne correspond à « {query} ».
+            </div>
+          ) : (
+            filtered.map(o => {
+              const isCurrent = o.code === currentValue;
+              return (
+                <button key={o.code} type="button"
+                        onClick={() => onSelect(o.code)}
+                        style={{
+                          width: '100%', boxSizing: 'border-box',
+                          background: isCurrent ? 'var(--accent-soft)' : 'transparent',
+                          border: 0,
+                          borderBottom: '1px solid var(--app-line-soft, var(--app-line))',
+                          padding: '12px 20px',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                          color: 'var(--text)',
+                          fontFamily: 'inherit',
+                          display: 'flex', alignItems: 'center', gap: 12,
+                        }}
+                        onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+                        onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = 'transparent'; }}>
+                  <span style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 13, fontWeight: 500,
+                    color: isCurrent ? 'var(--accent)' : 'var(--text)',
+                    minWidth: 64,
+                  }}>
+                    {o.code}
+                  </span>
+                  <span style={{ fontSize: 13, color: 'var(--text-dim)', flex: 1 }}>
+                    {o.label}
+                  </span>
+                  {isCurrent && (
+                    <I.Check size={14} sw={3} stroke="var(--accent)" />
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer info */}
+        <div style={{
+          padding: '10px 20px',
+          borderTop: '1px solid var(--app-line)',
+          fontSize: 11, color: 'var(--text-mute)',
+          fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.08em',
+        }}>
+          {filtered.length} compte{filtered.length > 1 ? 's' : ''} · Échap pour fermer
+        </div>
+      </div>
+    </div>
   );
 };
 
