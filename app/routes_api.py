@@ -33,6 +33,7 @@ from ocr_engine import (
     REVIEW_BASE, OUTPUT_FOLDER, MAX_PAGES_PER_BATCH,
     logger,
     COMPTES_CHARGES, COMPTES_TVA, COMPTES_FOURNISSEURS, COMPTES_TRESORERIE,
+    attach_default_accounts,
 )
 
 from .extensions import db
@@ -413,6 +414,14 @@ def api_review_get(run_id, run=None):
             rescan_data = json.loads(rescan_path.read_text(encoding='utf-8'))
         except Exception:
             pass
+
+    # Backfill comptes PCG pour les anciens runs qui n'avaient pas attach_default_accounts.
+    # attach_default_accounts ne modifie un champ que s'il est absent ou vide,
+    # donc les valeurs édités à la main ne sont pas écrasées.
+    for t in (queue.get('tickets') or []):
+        attach_default_accounts(t)
+    for t in (good_tickets or []):
+        attach_default_accounts(t)
 
     return jsonify({
         **queue,

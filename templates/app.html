@@ -14,8 +14,9 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/enop-app-tokens.css') }}" />
 <link rel="icon" href="{{ url_for('static', filename='img/logo-enop.svg') }}" type="image/svg+xml" />
 <style>
-  /* Responsive : sur écrans < 1280px, le panneau détail ticket repasse en 1 colonne */
-  @media (max-width: 1280px) {
+  /* Responsive : sur écrans < 1450px, le panneau détail ticket repasse en 1 colonne
+     (la sidebar tickets + l'image + le panneau 2 colonnes ne tient pas plus bas) */
+  @media (max-width: 1450px) {
     .ticket-detail-grid {
       grid-template-columns: 1fr !important;
     }
