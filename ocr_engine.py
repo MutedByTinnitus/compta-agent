@@ -3492,12 +3492,19 @@ def dedup_global_cross_page(tickets_par_page):
     return tickets_uniques, tickets_doublons
 
 
-def process_tickets(files_data, progress_cb=None):
+class JobCancelled(Exception):
+    """Levée quand l'utilisateur a demande l'annulation du job en cours."""
+    pass
+
+
+def process_tickets(files_data, progress_cb=None, cancel_check=None):
     """Traite une liste de tickets.
 
     progress_cb(step: str, pct: int, detail: str = "") -> None
         Hook optionnel appele aux jalons (upload, render, ai, filter, export).
-        Si None, comportement identique a avant.
+    cancel_check() -> bool
+        Hook optionnel appele aux points de controle. Si retourne True,
+        le pipeline leve JobCancelled et s'arrete proprement.
     """
     def _p(step, detail=""):
         if progress_cb is None:
@@ -3507,6 +3514,20 @@ def process_tickets(files_data, progress_cb=None):
         except Exception:
             pass
 
+    def _check_cancel():
+        """A appeler aux jalons. Leve JobCancelled si annulation demandee."""
+        if cancel_check is None:
+            return
+        try:
+            if cancel_check():
+                logger.info("[Cancel] Annulation demandee, arret du pipeline")
+                raise JobCancelled()
+        except JobCancelled:
+            raise
+        except Exception:
+            pass  # cancel_check ne doit jamais tuer le pipeline
+
+    _check_cancel()
     _p("upload", "Validation des PDF")
     run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     cost_tracking_start(run_id=run_id)
@@ -3541,6 +3562,7 @@ def process_tickets(files_data, progress_cb=None):
     logger.info(f"Traitement de {total_pages} page(s)")
     logger.info(f"{'='*50}")
 
+    _check_cancel()
     _p("render", f"{total_pages} page(s) prete(s)")
 
     # Traitement parallèle des pages (max 4 workers)
@@ -3548,6 +3570,7 @@ def process_tickets(files_data, progress_cb=None):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     t_start = _time.monotonic()
+    _check_cancel()
     _p("ai", f"Extraction IA sur {total_pages} page(s)")
 
     def process_one(idx, file_info):
@@ -3575,6 +3598,9 @@ def process_tickets(files_data, progress_cb=None):
                     progress_cb("ai", pct, f"{done_count}/{total_pages} page(s) extraite(s)")
                 except Exception:
                     pass
+            # Check cancel apres chaque page (permet une annulation rapide
+            # sans attendre la fin de toutes les pages en parallele).
+            _check_cancel()
 
     # ===== PASSE 1 : Filtrage qualité intra-page =====
     # Collecter tous les tickets validés par page, sans encore générer les écritures.
@@ -3642,6 +3668,7 @@ def process_tickets(files_data, progress_cb=None):
         refs_a_verifier_par_page[filename] = refs_a_verifier
         pdf_bytes_par_page[filename] = pdf_bytes
 
+    _check_cancel()
     _p("filter", "Dedup & controle qualite")
 
     # ===== PASSE 2 : Dédup globale cross-page =====
@@ -3815,6 +3842,7 @@ def process_tickets(files_data, progress_cb=None):
     elapsed = _time.monotonic() - t_start
     logger.info(f"[Perf] Traitement terminé en {elapsed:.1f}s pour {total_pages} pages")
 
+    _check_cancel()
     _p("export", "Generation Sage & PDF")
 
     # Generation fichiers (supprimes automatiquement apres FILE_RETENTION_MINUTES)

@@ -40,7 +40,7 @@ function AppRoot() {
   // Polling persistant du job actif (continue même quand l'utilisateur change de page)
   React.useEffect(() => {
     if (!job || !job.jobId) return;
-    if (job.status === 'done' || job.status === 'failed') return;
+    if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') return;
 
     let cancelled = false;
     const POLL_MS = 2000;
@@ -59,6 +59,7 @@ function AppRoot() {
           detail: data.detail || '',
           result: data.result || j.result,
           error: data.error || j.error,
+          cancel_requested: !!data.cancel_requested,
         } : null);
       } catch {}
     };
@@ -98,6 +99,25 @@ function AppRoot() {
   };
 
   const dismissJob = () => setJob(null);
+
+  // Demande l'annulation au backend. Le job restera affiché en mode
+  // "Annulation en cours…" jusqu'à ce que le polling reçoive status='cancelled'.
+  const cancelJob = async () => {
+    if (!job || !job.jobId) return;
+    if (!confirm('Annuler l\'analyse en cours ? Les tickets déjà extraits seront perdus.')) return;
+    try {
+      const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+      await fetch(`/api/jobs/${job.jobId}/cancel`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrf },
+        credentials: 'same-origin',
+      });
+      // Optimistic UI : on flag tout de suite
+      setJob(j => j ? { ...j, cancel_requested: true } : null);
+    } catch (e) {
+      console.error('[Cancel job]', e);
+    }
+  };
 
   if (!authChecked) {
     return (
@@ -161,7 +181,10 @@ function AppRoot() {
         )}
       </Shell>
 
-      {job && <JobToast job={job} onOpen={openJobResults} onDismiss={dismissJob} />}
+      {job && <JobToast job={job}
+                        onOpen={openJobResults}
+                        onDismiss={dismissJob}
+                        onCancel={cancelJob} />}
     </>
   );
 }

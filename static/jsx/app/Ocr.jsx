@@ -1439,7 +1439,7 @@ const SummaryRow = ({ label, value, mono, bold }) => (
 );
 
 // ─── JobToast : indicateur flottant bas-droite, persiste entre les pages ─
-const JobToast = ({ job, onOpen, onDismiss }) => {
+const JobToast = ({ job, onOpen, onDismiss, onCancel }) => {
   // Injecter keyframes (réutilise celles déjà créées par ProcessingOverlay si présentes)
   React.useEffect(() => {
     if (document.getElementById('enop-processing-keyframes')) return;
@@ -1470,6 +1470,8 @@ const JobToast = ({ job, onOpen, onDismiss }) => {
   const isActive = job.status === 'pending' || job.status === 'running';
   const isDone = job.status === 'done';
   const isFailed = job.status === 'failed';
+  const isCancelled = job.status === 'cancelled';
+  const isCancelling = isActive && job.cancel_requested;
 
   const stepLabel = {
     upload: 'Réception du fichier',
@@ -1492,6 +1494,12 @@ const JobToast = ({ job, onOpen, onDismiss }) => {
     borderColor = 'rgba(232,93,93,0.5)';
     accent = '#e85d5d';
     title = 'Échec de l\'analyse';
+  } else if (isCancelled) {
+    borderColor = 'rgba(255,255,255,0.18)';
+    accent = 'var(--text-dim)';
+    title = 'Analyse annulée';
+  } else if (isCancelling) {
+    title = 'Annulation en cours…';
   }
 
   return (
@@ -1517,7 +1525,7 @@ const JobToast = ({ job, onOpen, onDismiss }) => {
               fontFamily: 'JetBrains Mono, monospace',
               marginBottom: 4,
             }}>
-              {isActive && (
+              {isActive && !isCancelling && (
                 <>
                   Agent saisie
                   <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0s' }}>.</span>
@@ -1525,8 +1533,10 @@ const JobToast = ({ job, onOpen, onDismiss }) => {
                   <span style={{ animation: 'enop-dots 1.4s infinite', animationDelay: '0.4s' }}>.</span>
                 </>
               )}
+              {isCancelling && <>Annulation…</>}
               {isDone && <><I.Check size={11} sw={3} stroke={accent} /> Terminé</>}
               {isFailed && <><I.AlertCircle size={11} stroke={accent} /> Erreur</>}
+              {isCancelled && <><I.X size={11} stroke={accent} /> Annulé</>}
             </div>
             <div style={{
               fontSize: 13, fontWeight: 500, color: 'var(--text)',
@@ -1546,8 +1556,8 @@ const JobToast = ({ job, onOpen, onDismiss }) => {
             )}
           </div>
 
-          {/* Bouton fermer (uniquement quand done/failed pour ne pas tuer un run actif) */}
-          {!isActive && (
+          {/* Bouton fermer : uniquement quand terminé (done/failed/cancelled) */}
+          {(isDone || isFailed || isCancelled) && (
             <button onClick={onDismiss} title="Fermer" style={{
               background: 'transparent', border: 0, cursor: 'pointer',
               color: 'var(--text-mute)', padding: 2,
@@ -1588,6 +1598,21 @@ const JobToast = ({ job, onOpen, onDismiss }) => {
             <span style={{ color: accent, fontWeight: 500 }}>{job.progress || 0}%</span>
             <span>~{Math.floor((Date.now() - job.startedAt) / 1000)}s écoulées</span>
           </div>
+        )}
+
+        {/* Bouton Annuler : visible pendant qu'un job tourne, désactivé une fois cancel demandé */}
+        {isActive && (
+          <button onClick={onCancel}
+                  disabled={isCancelling}
+                  className="app-btn app-btn-ghost app-btn-sm"
+                  style={{
+                    width: '100%', marginTop: 10,
+                    justifyContent: 'center',
+                    fontSize: 12,
+                    color: isCancelling ? 'var(--text-mute)' : 'var(--text-dim)',
+                  }}>
+            {isCancelling ? 'Annulation en cours…' : "Annuler l'analyse"}
+          </button>
         )}
 
         {isDone && (

@@ -163,16 +163,39 @@ def api_process():
     def _progress_cb(step, pct, detail=""):
         update_job(job_id, status='running', step=step, progress=pct, detail=detail)
 
+    def _cancel_check():
+        """Lu par le pipeline aux jalons pour s'arreter proprement.
+        Retourne True si l'utilisateur a clique 'Annuler' (route /cancel)."""
+        data = load_job(job_id)
+        if not data:
+            return False
+        return bool(data.get('cancel_requested'))
+
     def _run_job_with_ctx(jid, fdata, _db_run_id):
+        from ocr_engine import JobCancelled
         with flask_app.app_context():
             try:
-                results = process_tickets(fdata, progress_cb=_progress_cb)
+                results = process_tickets(
+                    fdata,
+                    progress_cb=_progress_cb,
+                    cancel_check=_cancel_check,
+                )
                 for fd in fdata:
                     fd['bytes'] = None
                 fdata.clear()
                 _persist_run_completion(_db_run_id, results)
                 update_job(jid, status='done', progress=100, step='export',
                            detail='Termine', result=results)
+            except JobCancelled:
+                logger.info(f"[Job {jid}] annule par l'utilisateur")
+                update_job(jid, status='cancelled', detail='Annule par l\'utilisateur')
+                try:
+                    r = db.session.get(Run, _db_run_id)
+                    if r and r.status not in ('done', 'failed'):
+                        r.status = 'cancelled'
+                        db.session.commit()
+                except Exception:
+                    db.session.rollback()
             except Exception as e:
                 logger.exception(f"[Job {jid}] echec : {e}")
                 update_job(jid, status='failed', error=str(e))
@@ -310,6 +333,45 @@ def api_job_status(job_id):
     if job_org and job_org != str(current_user.organization_id):
         return jsonify({'error': 'Job introuvable'}), 404
     return jsonify(data)
+
+
+@api_bp.route('/api/jobs/<job_id>/cancel', methods=['POST'])
+@login_required
+def api_job_cancel(job_id):
+    """Demande l'annulation d'un job. Le worker vérifie ce flag aux jalons
+    (avant chaque appel LLM, entre les pages) et s'arrête proprement."""
+    if not re.fullmatch(r'[a-f0-9]{32}', job_id or ''):
+        return jsonify({'error': 'job_id invalide'}), 400
+
+    data = load_job(job_id)
+    if data is None:
+        return jsonify({'error': 'Job introuvable'}), 404
+
+    # Multi-tenant : seul le propriétaire peut annuler
+    job_org = data.get('organization_id')
+    if job_org and job_org != str(current_user.organization_id):
+        return jsonify({'error': 'Job introuvable'}), 404
+
+    # Si déjà terminé, on ne fait rien
+    if data.get('status') in ('done', 'failed', 'cancelled'):
+        return jsonify({'ok': True, 'already': data.get('status')})
+
+    # Marquer le job comme à annuler — le worker verra ça à son prochain check
+    update_job(job_id, cancel_requested=True)
+
+    # Marquer aussi le Run DB comme cancelled
+    db_run_id = data.get('db_run_id')
+    if db_run_id:
+        try:
+            r = db.session.get(Run, db_run_id)
+            if r and r.status not in ('done', 'failed'):
+                r.status = 'cancelled'
+                _log_audit('run.cancel', resource_type='run', resource_id=str(r.id))
+                db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    return jsonify({'ok': True, 'cancel_requested': True}), 202
 
 
 # ─── /api/runs et /api/runs/<id> ─────────────────────────────────
