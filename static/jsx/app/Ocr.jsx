@@ -465,6 +465,15 @@ const OcrValidation = ({ onNext, onBack, runResult }) => {
   const [error, setError] = React.useState(null);
   const [selected, setSelected] = React.useState(null); // ticket_id of doubtful selected
   const [tab, setTab] = React.useState('doubtful'); // doubtful | good | unreadable
+  const [planComptable, setPlanComptable] = React.useState(null);
+
+  // Charger le plan comptable une seule fois (pour les comboboxes comptes)
+  React.useEffect(() => {
+    fetch('/api/plan-comptable', { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setPlanComptable(d); })
+      .catch(() => {});
+  }, []);
 
   const fetchQueue = React.useCallback(async () => {
     if (!runId) { setLoading(false); return; }
@@ -615,6 +624,7 @@ const OcrValidation = ({ onNext, onBack, runResult }) => {
                             ticket={selectedTicket}
                             runId={runId}
                             mode={tab}
+                            planComptable={planComptable}
                             onUpdated={onUpdated} />
             )}
           </div>
@@ -712,7 +722,7 @@ const fmtAmount = (v) => {
   return n.toFixed(2);
 };
 
-const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
+const TicketDetail = ({ ticket, runId, mode, planComptable, onUpdated }) => {
   const [fields, setFields] = React.useState(() => ({
     date: ticket.date || '',
     fournisseur: ticket.fournisseur || '',
@@ -721,6 +731,11 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
     montant_tva: fmtAmount(ticket.montant_tva),
     type: ticket.type || '',
     mode_paiement: ticket.mode_paiement || '',
+    numero_facture: ticket.numero_facture || '',
+    compte_charge: ticket.compte_charge || '',
+    compte_tva: ticket.compte_tva || '',
+    compte_fournisseur: ticket.compte_fournisseur || '',
+    compte_tresorerie: ticket.compte_tresorerie || '',
   }));
   const [saving, setSaving] = React.useState(false);
   const [err, setErr] = React.useState(null);
@@ -874,6 +889,32 @@ const TicketDetail = ({ ticket, runId, mode, onUpdated }) => {
             <Field label="Mode paiement" value={fields.mode_paiement} onChange={v => setField('mode_paiement', v)} readOnly={readOnly} />
           </Row>
 
+          <Field label="N° de facture (optionnel)" value={fields.numero_facture}
+                 onChange={v => setField('numero_facture', v)} readOnly={readOnly} />
+
+          {/* Plan comptable : 4 combobox avec autocomplete */}
+          <div style={{ paddingTop: 6, borderTop: '1px dashed var(--app-line)' }}>
+            <div className="caption" style={{ fontSize: 11, marginTop: 8, marginBottom: 8, color: 'var(--text-mute)' }}>
+              Affectation comptable
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <AccountField label="Compte de charge" value={fields.compte_charge}
+                            onChange={v => setField('compte_charge', v)}
+                            options={planComptable?.charges} readOnly={readOnly} />
+              <Row>
+                <AccountField label="Compte TVA" value={fields.compte_tva}
+                              onChange={v => setField('compte_tva', v)}
+                              options={planComptable?.tva} readOnly={readOnly} />
+                <AccountField label="Compte fournisseur" value={fields.compte_fournisseur}
+                              onChange={v => setField('compte_fournisseur', v)}
+                              options={planComptable?.fournisseurs} readOnly={readOnly} />
+              </Row>
+              <AccountField label="Compte trésorerie" value={fields.compte_tresorerie}
+                            onChange={v => setField('compte_tresorerie', v)}
+                            options={planComptable?.tresorerie} readOnly={readOnly} />
+            </div>
+          </div>
+
           {err && (
             <div className="app-alert app-alert-danger" style={{ marginTop: 6 }}>
               <I.AlertCircle size={14} className="app-alert-icon"/>
@@ -949,6 +990,48 @@ const Field = ({ label, value, onChange, onBlur, readOnly, mono }) => (
 const Row = ({ children }) => (
   <div style={{ display: 'flex', gap: 10, width: '100%' }}>{children}</div>
 );
+
+// Combobox pour compte comptable : input texte libre + datalist HTML5 d'options.
+// L'utilisateur peut taper directement un code (606140) ou choisir dans la liste.
+const AccountField = ({ label, value, onChange, options, readOnly }) => {
+  const listId = React.useId ? React.useId() : `dl-${label}`;
+  const opts = options || [];
+  // Trouve le label correspondant au code actuel pour l'afficher en aide
+  const currentLabel = opts.find(o => o.code === value)?.label;
+
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+      <span className="caption" style={{ fontSize: 11 }}>
+        {label}
+        {currentLabel && (
+          <span style={{ color: 'var(--text-mute)', fontWeight: 400, marginLeft: 6 }}>
+            · {currentLabel}
+          </span>
+        )}
+      </span>
+      <input type="text"
+             list={listId}
+             value={value ?? ''}
+             readOnly={readOnly}
+             placeholder="Code PCG (ex: 606140)"
+             onChange={(e) => onChange(e.target.value)}
+             style={{
+               width: '100%', boxSizing: 'border-box',
+               background: readOnly ? 'transparent' : 'var(--app-card-hi)',
+               border: '1px solid var(--app-line)',
+               borderRadius: 6, padding: '7px 10px',
+               color: 'var(--text)',
+               fontFamily: "'JetBrains Mono', monospace",
+               fontSize: 12.5, outline: 'none', minWidth: 0,
+             }}/>
+      <datalist id={listId}>
+        {opts.map(o => (
+          <option key={o.code} value={o.code}>{o.code} — {o.label}</option>
+        ))}
+      </datalist>
+    </label>
+  );
+};
 
 const FailActions = ({ ticket }) => (
   <div className="app-card app-card-body">

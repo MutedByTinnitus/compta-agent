@@ -32,6 +32,7 @@ from ocr_engine import (
     generate_ecritures_from_tickets, create_excel,
     REVIEW_BASE, OUTPUT_FOLDER, MAX_PAGES_PER_BATCH,
     logger,
+    COMPTES_CHARGES, COMPTES_TVA, COMPTES_FOURNISSEURS, COMPTES_TRESORERIE,
 )
 
 from .extensions import db
@@ -438,7 +439,9 @@ def api_review_update(run_id, ticket_id, run=None):
 
     if action == 'validate' and fields:
         for key in ('date', 'fournisseur', 'montant_ttc', 'montant_ht', 'montant_tva',
-                    'mode_paiement', 'type'):
+                    'mode_paiement', 'type',
+                    'compte_charge', 'compte_tva', 'compte_fournisseur', 'compte_tresorerie',
+                    'numero_facture'):
             if key in fields:
                 updates[key] = fields[key]
         updates['user_corrected'] = True
@@ -975,3 +978,16 @@ def delete_dossier(dossier_id):
     _log_audit('dossier.delete', resource_type='dossier', resource_id=str(d.id))
     db.session.commit()
     return jsonify({'ok': True})
+
+
+# ─── /api/plan-comptable ─────────────────────────────────────────
+@api_bp.route('/api/plan-comptable', methods=['GET'])
+@login_required
+def get_plan_comptable():
+    """Retourne le plan comptable PCG (sous-ensemble utile pour l'UI)."""
+    return jsonify({
+        'charges': COMPTES_CHARGES,
+        'tva': COMPTES_TVA,
+        'fournisseurs': COMPTES_FOURNISSEURS,
+        'tresorerie': COMPTES_TRESORERIE,
+    })

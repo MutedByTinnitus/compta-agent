@@ -2104,10 +2104,148 @@ def cross_validate_against_ocr(tickets, ocr_text):
     return validated
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# PLAN COMPTABLE (PCG français — sous-ensemble utile pour ENOP)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Comptes de CHARGES proposés dans l'UI (combobox compte_charge)
+COMPTES_CHARGES = [
+    {'code': '606100', 'label': 'Fournitures non stockables (eau, énergie)'},
+    {'code': '606140', 'label': 'Carburants'},
+    {'code': '606300', 'label': "Fournitures d'entretien et petit équipement"},
+    {'code': '606400', 'label': 'Fournitures administratives'},
+    {'code': '606800', 'label': 'Autres matières et fournitures'},
+    {'code': '615100', 'label': 'Entretien et réparations sur immobilisations'},
+    {'code': '615500', 'label': 'Entretien et réparations sur biens mobiliers'},
+    {'code': '622600', 'label': 'Honoraires'},
+    {'code': '623100', 'label': 'Annonces et insertions'},
+    {'code': '623600', 'label': 'Catalogues et imprimés'},
+    {'code': '625100', 'label': 'Voyages et déplacements'},
+    {'code': '625110', 'label': 'Transports routiers (péages, taxi)'},
+    {'code': '625120', 'label': 'Transports ferroviaires (SNCF, TER)'},
+    {'code': '625130', 'label': 'Transports aériens'},
+    {'code': '625200', 'label': 'Frais de déplacement du personnel'},
+    {'code': '625600', 'label': 'Missions (repas, hôtel)'},
+    {'code': '625610', 'label': "Repas d'affaires"},
+    {'code': '625620', 'label': 'Hébergement / hôtel'},
+    {'code': '625700', 'label': 'Réceptions'},
+    {'code': '625800', 'label': 'Frais de stationnement (parking)'},
+    {'code': '626100', 'label': 'Frais postaux'},
+    {'code': '626200', 'label': 'Télécommunications (téléphone, internet)'},
+    {'code': '627800', 'label': 'Frais bancaires'},
+    {'code': '628100', 'label': 'Concours divers, cotisations'},
+]
+
+COMPTES_TVA = [
+    {'code': '445620', 'label': 'TVA sur immobilisations'},
+    {'code': '445660', 'label': 'TVA déductible 20% sur biens et services'},
+    {'code': '445661', 'label': 'TVA déductible 5,5%'},
+    {'code': '445662', 'label': 'TVA déductible 10%'},
+    {'code': '445663', 'label': 'TVA déductible 2,1%'},
+    {'code': '445670', 'label': 'TVA déductible intracommunautaire'},
+]
+
+COMPTES_FOURNISSEURS = [
+    {'code': '401000', 'label': 'Fournisseurs - comptes généraux'},
+    {'code': '401100', 'label': 'Fournisseurs (générique)'},
+    {'code': '408100', 'label': 'Fournisseurs - factures non parvenues'},
+]
+
+COMPTES_TRESORERIE = [
+    {'code': '512000', 'label': 'Banque'},
+    {'code': '512100', 'label': 'Banque - compte principal'},
+    {'code': '514000', 'label': 'Chèques postaux'},
+    {'code': '530000', 'label': 'Caisse (espèces)'},
+]
+
+# Mapping type ENOP → compte de charge par défaut
+TYPE_TO_COMPTE_CHARGE = {
+    'carburant':    '606140',
+    'peage':        '625110',
+    'parking':      '625800',
+    'train':        '625120',
+    'transport':    '625100',
+    'avion':        '625130',
+    'taxi':         '625110',
+    'repas':        '625610',
+    'restaurant':   '625610',
+    'hotel':        '625620',
+    'fournitures':  '606400',
+    'fourniture':   '606400',
+    'telecom':      '626200',
+    'internet':     '626200',
+    'autre':        '606800',
+    '':             '606800',
+}
+
+
+def compte_charge_for_type(type_dep: str) -> str:
+    if not type_dep:
+        return '606800'
+    return TYPE_TO_COMPTE_CHARGE.get(type_dep.lower().strip(), '606800')
+
+
+def compte_tva_for_rate(taux_pct: float) -> str:
+    """Retourne le code compte TVA selon le taux (%). Défaut 20%."""
+    if taux_pct is None:
+        return '445660'
+    t = round(float(taux_pct), 1)
+    if t == 5.5:
+        return '445661'
+    if t == 10.0:
+        return '445662'
+    if t == 2.1:
+        return '445663'
+    return '445660'  # 20% ou inconnu
+
+
+def compte_tresorerie_for_mode(mode_paiement: str) -> str:
+    """Compte trésorerie selon mode de paiement (CB/ESP/CHQ)."""
+    if not mode_paiement:
+        return '512000'
+    mp = str(mode_paiement).upper().strip()
+    if mp in ('ESP', 'ESPECES', 'CASH'):
+        return '530000'
+    if mp in ('CHQ', 'CHEQUE'):
+        return '514000'
+    return '512000'
+
+
+def attach_default_accounts(ticket: dict) -> None:
+    """Ajoute compte_charge / compte_tva / compte_fournisseur / compte_tresorerie
+    à un ticket d'extraction, SI ces champs sont absents (préserve les valeurs
+    saisies manuellement par l'utilisateur)."""
+    type_dep = ticket.get('type', '') or ''
+
+    # Déduire le taux TVA depuis HT/TVA si pas explicite
+    ht = float(ticket.get('montant_ht') or 0)
+    tva = float(ticket.get('montant_tva') or 0)
+    taux_pct = None
+    if ht > 0 and tva > 0:
+        taux_pct = round((tva / ht) * 100, 1)
+
+    if not ticket.get('compte_charge'):
+        ticket['compte_charge'] = compte_charge_for_type(type_dep)
+    if not ticket.get('compte_tva'):
+        ticket['compte_tva'] = compte_tva_for_rate(taux_pct)
+    if not ticket.get('compte_fournisseur'):
+        ticket['compte_fournisseur'] = '401100'
+    if not ticket.get('compte_tresorerie'):
+        ticket['compte_tresorerie'] = compte_tresorerie_for_mode(
+            ticket.get('mode_paiement', '')
+        )
+
+
 def generate_ecritures_from_tickets(tickets, start_ref=1):
     """Moteur comptable Python pur. Equilibre garanti mathematiquement.
-    L'IA extrait les donnees brutes, Python fait TOUS les calculs."""
+    L'IA extrait les donnees brutes, Python fait TOUS les calculs.
 
+    Si le ticket contient des comptes (compte_charge, compte_tva,
+    compte_tresorerie), on les utilise. Sinon fallback sur les anciens codes
+    8 chiffres (compat retro)."""
+
+    # Anciens codes 8 chiffres (legacy). Utilisés en fallback si le ticket
+    # n'a pas de compte_charge explicite (vieux runs avant le plan comptable).
     COMPTE_MAP = {
         'carburant': '62520000',
         'peage':     '62510000',
@@ -2187,7 +2325,15 @@ def generate_ecritures_from_tickets(tickets, start_ref=1):
                     ht = ttc
                     tva = 0
 
-        compte = COMPTE_MAP.get(type_dep, '60680000')
+        # Comptes utilisés pour les écritures :
+        # - Priorité 1 : les comptes saisis sur le ticket (compte_charge,
+        #   compte_tva, compte_tresorerie) — possiblement modifiés par
+        #   l'utilisateur dans l'UI Validation.
+        # - Priorité 2 : fallback sur les anciens mappings (COMPTE_MAP 8 chiffres)
+        #   pour la compat retro avec les vieux runs.
+        compte = t.get('compte_charge') or COMPTE_MAP.get(type_dep, '60680000')
+        compte_tva_code = t.get('compte_tva') or '44566000'
+        compte_tresorerie = t.get('compte_tresorerie') or '51200000'
         taux = TVA_RULES.get(type_dep, 0)
 
         def ligne(cpt, debit, credit):
@@ -2199,11 +2345,11 @@ def generate_ecritures_from_tickets(tickets, start_ref=1):
 
         if taux == 0:
             # TVA non deductible : charge = TTC
-            ecritures += [ligne(compte, ttc, 0), ligne('51200000', 0, ttc)]
+            ecritures += [ligne(compte, ttc, 0), ligne(compte_tresorerie, 0, ttc)]
 
         elif tva == 0:
             # Pas de TVA sur le ticket : charge = TTC sans ligne TVA
-            ecritures += [ligne(compte, ttc, 0), ligne('51200000', 0, ttc)]
+            ecritures += [ligne(compte, ttc, 0), ligne(compte_tresorerie, 0, ttc)]
 
         elif taux < 1.0:
             # Carburant : TVA partiellement deductible (80%)
@@ -2213,12 +2359,12 @@ def generate_ecritures_from_tickets(tickets, start_ref=1):
             # Ajustement centimes pour garantir debit = ttc
             if round(charge + tva_ded, 2) != ttc:
                 charge = round(ttc - tva_ded, 2)
-            ecritures += [ligne(compte, charge, 0), ligne('44566000', tva_ded, 0), ligne('51200000', 0, ttc)]
+            ecritures += [ligne(compte, charge, 0), ligne(compte_tva_code, tva_ded, 0), ligne(compte_tresorerie, 0, ttc)]
             alerts.append(f"{ref} : Carburant TVA 80% appliquee (defaut tourisme) - verifier si vehicule utilitaire (100%)")
 
         else:
             # TVA 100% deductible
-            ecritures += [ligne(compte, ht, 0), ligne('44566000', tva, 0), ligne('51200000', 0, ttc)]
+            ecritures += [ligne(compte, ht, 0), ligne(compte_tva_code, tva, 0), ligne(compte_tresorerie, 0, ttc)]
 
         # Verification equilibre — avec ajustement automatique si écart ≤ 0.02€
         lignes_ref = [e for e in ecritures if e['reference'] == ref]
@@ -3557,6 +3703,9 @@ def process_tickets(files_data, progress_cb=None):
             if not t.get('ticket_id'):
                 t['ticket_id'] = _uuid.uuid4().hex[:12]
             t['source_page'] = filename
+            # Plan comptable : pre-remplir compte_charge / compte_tva / compte_fournisseur
+            # / compte_tresorerie selon type et mode de paiement (modifiable dans l'UI).
+            attach_default_accounts(t)
             sq = classify_ticket_for_queue(t)
             t['scan_quality'] = sq
             if sq == 'good':
