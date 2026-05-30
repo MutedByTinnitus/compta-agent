@@ -2711,7 +2711,14 @@ def analyze_ticket_with_retry(pdf_bytes, filename="ticket.pdf"):
     # 3.5. PRÉ-SEGMENTATION CV (optionnelle, désactivable via env var)
     # Si la page contient plusieurs tickets distincts, on envoie chaque crop
     # individuellement à Gemini → évite les troncatures et améliore la qualité.
-    cv_preseg_enabled = os.environ.get('CV_PRESEG_ENABLED', 'true').lower() == 'true'
+    # Pre-segmentation OpenCV DESACTIVEE par defaut.
+    # Probleme : sur les PDFs denses (tickets photocopies-colles sur A4),
+    # OpenCV crop mal -> Gemini ne voit que des morceaux -> tickets classes
+    # comme 'unreadable'. Le mode "Gemini d'abord sur la page entiere, puis
+    # crop pour l'UI avec les bbox renvoyes par Gemini" est plus fiable.
+    # Maintenant que maxOutputTokens=32K, Gemini ne tronque plus.
+    # Reactiver via CV_PRESEG_ENABLED=true si besoin de tester.
+    cv_preseg_enabled = os.environ.get('CV_PRESEG_ENABLED', 'false').lower() == 'true'
     if cv_preseg_enabled:
         regions = detect_ticket_regions(png_bytes)
         if len(regions) >= 2:
