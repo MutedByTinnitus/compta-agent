@@ -59,5 +59,28 @@ services:
       timeout: 5s
       retries: 10
 
+  # Backup automatique (mêmes paramètres qu'en prod, utile pour tester localement)
+  db-backup:
+    image: prodrigestivill/postgres-backup-local:16-alpine
+    container_name: compta-agent-db-backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: enop
+      POSTGRES_USER: enop
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-enop_dev}
+      POSTGRES_EXTRA_OPTS: '-Z9 --schema=public'
+      SCHEDULE: '@daily'
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 6
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - pgbackups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  pgbackups:

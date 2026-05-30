@@ -88,8 +88,42 @@ services:
       timeout: 5s
       retries: 10
 
+  # ─────────────────────────────────────────────────────────────────
+  # BACKUP POSTGRES
+  # ─────────────────────────────────────────────────────────────────
+  # Image standard de la communauté qui fait pg_dump | gzip sur planning.
+  # Garde 7 derniers backups quotidiens, 4 hebdo, 6 mensuels.
+  # Stockés dans le volume nommé enop2_pgbackups (persistant).
+  #
+  # Restauration manuelle (sur le serveur, via Portainer console enop2-db) :
+  #   gunzip -c /backups/last/enop-latest.sql.gz | psql -U enop -d enop
+  #
+  # Lister les backups dispo :
+  #   docker exec enop2-db-backup ls -la /backups/last /backups/daily
+  db-backup:
+    image: prodrigestivill/postgres-backup-local:16-alpine
+    container_name: enop2-db-backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: enop
+      POSTGRES_USER: enop
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_EXTRA_OPTS: '-Z9 --schema=public'  # compression max, schema public
+      SCHEDULE: '@daily'                          # une fois par jour à 00:00 UTC
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 6
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - enop2_pgbackups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   enop2_pgdata:
+  enop2_pgbackups:
   enop2_outputs:
   enop2_jobs:
   enop2_logs:
